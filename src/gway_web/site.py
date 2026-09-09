@@ -31,19 +31,16 @@ class Site:
 
     @property
     def upstream_url(self) -> str:
-        """Return the application's direct host/port URL."""
         return _build_url(self.scheme, self.host, self.port)
 
     @property
     def url(self) -> str:
-        """Return the externally meaningful URL when a domain is configured."""
         if self.domain:
             return _build_url(self.scheme, self.domain, None)
         return self.upstream_url
 
     @property
     def health_url(self) -> str:
-        """Return the direct application health URL."""
         return f"{self.upstream_url}{self.health_path}"
 
 
@@ -55,11 +52,19 @@ def _build_url(scheme: str, host: str, port: int | None) -> str:
     return urlunsplit((scheme, authority, "", "", ""))
 
 
-def url(site: Site) -> str:
-    """Return the canonical URL for *site*."""
-    return site.url
+def url(site: Site | str) -> str:
+    """Return the canonical URL for a Site or registered site name."""
+    if isinstance(site, Site):
+        return site.url
+    from .registry import resolve
+
+    return resolve(site).url
 
 
-def upstream_url(site: Site) -> str:
-    """Return the direct application URL for *site*."""
-    return site.upstream_url
+def upstream_url(site: Site | str) -> str:
+    """Return the direct application URL for a Site or registered site name."""
+    if isinstance(site, Site):
+        return site.upstream_url
+    from .registry import resolve
+
+    return resolve(site).upstream_url
