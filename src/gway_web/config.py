@@ -28,10 +28,10 @@ def read_sites(path: str | Path | None = None) -> list[Site]:
         data = tomllib.load(stream)
     table = data.get("sites", {})
     if not isinstance(table, dict):
-        raise ValueError("sites must be a TOML table")
+        raise TypeError("sites must be a TOML table")
     result: list[Site] = []
     for name, values in table.items():
         if not isinstance(values, dict):
-            raise ValueError(f"site {name!r} must be a TOML table")
+            raise TypeError(f"site {name!r} must be a TOML table")
         result.append(Site(name=name, **values))
     return result
