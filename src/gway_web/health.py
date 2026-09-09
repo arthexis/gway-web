@@ -36,7 +36,7 @@ def health(site: Site, *, timeout: float = 5.0) -> HealthResult:
     started = monotonic()
     request = Request(site.health_url, method="GET")
     try:
-        with urlopen(request, timeout=timeout) as response:  # noqa: S310
+        with urlopen(request, timeout=timeout) as response:
             code = response.getcode()
             return HealthResult(
                 ok=200 <= code < 400,
