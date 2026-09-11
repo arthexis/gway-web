@@ -39,8 +39,12 @@ def test_obtain_dns_uses_manual_dns_hooks_and_supports_wildcards(tmp_path, monke
     statuses = [missing, ready]
     calls = []
     monkeypatch.setattr("gway_web.certbot.certificate_status", lambda domain: statuses.pop(0))
-    monkeypatch.setattr("gway_web.certbot.discover_certbot", lambda executable=None: Path("/bin/certbot"))
-    monkeypatch.setattr("gway_web.certbot.subprocess.run", lambda command, check: calls.append(command))
+    monkeypatch.setattr(
+        "gway_web.certbot.discover_certbot", lambda executable=None: Path("/bin/certbot")
+    )
+    monkeypatch.setattr(
+        "gway_web.certbot.subprocess.run", lambda command, check: calls.append(command)
+    )
 
     result = obtain_dns(
         "*.example.com",
@@ -77,8 +81,12 @@ def test_manual_renewal_passes_provider_hooks_to_certbot(tmp_path, monkeypatch):
     status = _status(tmp_path)
     calls = []
     monkeypatch.setattr("gway_web.certbot.certificate_status", lambda domain: status)
-    monkeypatch.setattr("gway_web.certbot.discover_certbot", lambda executable=None: Path("/bin/certbot"))
-    monkeypatch.setattr("gway_web.certbot.subprocess.run", lambda command, check: calls.append(command))
+    monkeypatch.setattr(
+        "gway_web.certbot.discover_certbot", lambda executable=None: Path("/bin/certbot")
+    )
+    monkeypatch.setattr(
+        "gway_web.certbot.subprocess.run", lambda command, check: calls.append(command)
+    )
 
     renewed = renew(
         "example.com",
