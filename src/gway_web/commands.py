@@ -46,7 +46,9 @@ def _configured_site(name: str) -> Site:
     raise KeyError(f"unknown site: {name}")
 
 
-def _provider(cert_provider: str | None, certificate_provider: str | None, certbot: bool) -> str | None:
+def _provider(
+    cert_provider: str | None, certificate_provider: str | None, certbot: bool
+) -> str | None:
     if cert_provider and certificate_provider and cert_provider != certificate_provider:
         raise ValueError("--cert-provider and --certificate-provider disagree")
     provider = cert_provider or certificate_provider
