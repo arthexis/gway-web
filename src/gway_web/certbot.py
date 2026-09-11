@@ -220,32 +220,32 @@ def renew(
         raise RuntimeError(f"cannot renew Certbot certificate in {current.state!r} state")
     authenticator = _renewal_authenticator(current.renewal_config)
 
-    command = [
-        str(discover_certbot(executable)),
-        "renew",
-        "--cert-name",
-        domain,
-        "--non-interactive",
-    ]
+    manual_args: list[str] = []
     if authenticator == "webroot":
         pass
     elif authenticator == "manual" and dns_hooks is not None:
-        command.extend(
-            [
-                "--preferred-challenges",
-                "dns",
-                "--manual-auth-hook",
-                dns_hooks.auth_hook,
-                "--manual-cleanup-hook",
-                dns_hooks.cleanup_hook,
-            ]
-        )
+        manual_args = [
+            "--preferred-challenges",
+            "dns",
+            "--manual-auth-hook",
+            dns_hooks.auth_hook,
+            "--manual-cleanup-hook",
+            dns_hooks.cleanup_hook,
+        ]
     else:
         expected = "'webroot' or 'manual' with dns_hooks"
         raise RuntimeError(
             f"refusing renewal configured with {authenticator!r}; expected {expected}"
         )
 
+    command = [
+        str(discover_certbot(executable)),
+        "renew",
+        "--cert-name",
+        domain,
+        "--non-interactive",
+        *manual_args,
+    ]
     if deploy_hook:
         command.extend(["--deploy-hook", deploy_hook])
     if dry_run:
@@ -331,7 +331,7 @@ def _validate_domain(domain: str) -> None:
 
 
 def _certificate_name(domain: str, cert_name: str | None) -> str:
-    name = cert_name or (domain[2:] if domain.startswith("*.") else domain)
+    name = cert_name or domain.removeprefix("*.")
     _validate_domain(name)
     if "*" in name:
         raise ValueError("Certbot certificate name cannot contain a wildcard")
