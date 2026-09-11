@@ -16,6 +16,8 @@ class Site:
     port: int = 8000
     scheme: str = "http"
     health_path: str = "/"
+    tls: bool = False
+    redirect_http: bool = True
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -34,9 +36,15 @@ class Site:
         return _build_url(self.scheme, self.host, self.port)
 
     @property
+    def public_scheme(self) -> str:
+        """Return the externally advertised scheme independently of the upstream."""
+
+        return "https" if self.tls else self.scheme
+
+    @property
     def url(self) -> str:
         if self.domain:
-            return _build_url(self.scheme, self.domain, None)
+            return _build_url(self.public_scheme, self.domain, None)
         return self.upstream_url
 
     @property
@@ -51,6 +59,8 @@ def site(
     port: int = 8000,
     scheme: str = "http",
     health_path: str = "/",
+    tls: bool = False,
+    redirect_http: bool = True,
 ) -> Site:
     """Build a portable site description from GWAY command arguments."""
     return Site(
@@ -60,6 +70,8 @@ def site(
         port=port,
         scheme=scheme,
         health_path=health_path,
+        tls=tls,
+        redirect_http=redirect_http,
     )
 
 
