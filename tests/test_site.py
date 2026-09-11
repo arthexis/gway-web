@@ -14,6 +14,21 @@ def test_site_urls_use_domain_for_public_url() -> None:
     assert target.health_url == "http://127.0.0.1:8000/"
 
 
+def test_tls_intent_is_independent_from_upstream_scheme() -> None:
+    target = Site(
+        name="arthexis",
+        domain="charge.example.com",
+        host="127.0.0.1",
+        port=8888,
+        scheme="http",
+        tls=True,
+    )
+
+    assert target.upstream_url == "http://127.0.0.1:8888"
+    assert target.url == "https://charge.example.com"
+    assert target.public_scheme == "https"
+
+
 def test_site_command_builds_portable_site() -> None:
     target = site(
         "arthexis",
@@ -22,6 +37,10 @@ def test_site_command_builds_portable_site() -> None:
         port=9000,
         scheme="https",
         health_path="/health/",
+        tls=True,
+        redirect_http=False,
+        tls_certificate="/certs/fullchain.pem",
+        tls_certificate_key="/certs/privkey.pem",
     )
 
     assert target == Site(
@@ -31,11 +50,26 @@ def test_site_command_builds_portable_site() -> None:
         port=9000,
         scheme="https",
         health_path="/health/",
+        tls=True,
+        redirect_http=False,
+        tls_certificate="/certs/fullchain.pem",
+        tls_certificate_key="/certs/privkey.pem",
     )
 
 
 def test_site_command_uses_site_defaults() -> None:
     assert site("arthexis") == Site(name="arthexis")
+
+
+def test_tls_certificate_paths_are_a_pair() -> None:
+    with pytest.raises(ValueError, match="must be provided together"):
+        Site(name="arthexis", tls=True, tls_certificate="/certs/fullchain.pem")
+    with pytest.raises(ValueError, match="require tls=True"):
+        Site(
+            name="arthexis",
+            tls_certificate="/certs/fullchain.pem",
+            tls_certificate_key="/certs/privkey.pem",
+        )
 
 
 def test_registry_sorts_and_retrieves_sites() -> None:

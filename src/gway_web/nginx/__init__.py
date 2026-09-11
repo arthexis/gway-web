@@ -2,7 +2,7 @@
 
 from .discovery import NginxLayout, discover_nginx
 from .operations import disable, enable, expose, reload, test
-from .render import render_http_proxy
+from .render import render_http_proxy, render_proxy
 
 __all__ = [
     "NginxLayout",
@@ -12,5 +12,6 @@ __all__ = [
     "expose",
     "reload",
     "render_http_proxy",
+    "render_proxy",
     "test",
 ]
