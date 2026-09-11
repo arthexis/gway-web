@@ -64,6 +64,17 @@ def test_obtain_dns_uses_manual_dns_hooks_and_supports_wildcards(tmp_path, monke
     assert "--nginx" not in command
 
 
+def test_obtain_dns_rejects_embedded_wildcard_labels():
+    with pytest.raises(ValueError, match="leading '\\*\\.' label"):
+        obtain_dns(
+            "*.foo*.example.com",
+            email="admin@example.com",
+            hooks=DNSHooks("gway dns auth", "gway dns cleanup"),
+            agree_tos=True,
+            cert_name="example.com",
+        )
+
+
 def test_dns_hooks_reject_multiline_commands():
     with pytest.raises(ValueError, match="single command line"):
         DNSHooks("first\nsecond", "cleanup")
