@@ -1,6 +1,6 @@
 import pytest
 
-from gway_web import Site, clear, get, register, sites, upstream_url, url
+from gway_web import Site, clear, get, register, site, sites, upstream_url, url
 
 
 def setup_function() -> None:
@@ -8,16 +8,40 @@ def setup_function() -> None:
 
 
 def test_site_urls_use_domain_for_public_url() -> None:
-    site = Site(name="watchtower", domain="gelectriic.com", host="127.0.0.1", port=8000)
-    assert url(site) == "http://gelectriic.com"
-    assert upstream_url(site) == "http://127.0.0.1:8000"
-    assert site.health_url == "http://127.0.0.1:8000/"
+    target = Site(name="watchtower", domain="gelectriic.com", host="127.0.0.1", port=8000)
+    assert url(target) == "http://gelectriic.com"
+    assert upstream_url(target) == "http://127.0.0.1:8000"
+    assert target.health_url == "http://127.0.0.1:8000/"
+
+
+def test_site_command_builds_portable_site() -> None:
+    target = site(
+        "arthexis",
+        domain="example.com",
+        host="127.0.0.1",
+        port=9000,
+        scheme="https",
+        health_path="/health/",
+    )
+
+    assert target == Site(
+        name="arthexis",
+        domain="example.com",
+        host="127.0.0.1",
+        port=9000,
+        scheme="https",
+        health_path="/health/",
+    )
+
+
+def test_site_command_uses_site_defaults() -> None:
+    assert site("arthexis") == Site(name="arthexis")
 
 
 def test_registry_sorts_and_retrieves_sites() -> None:
     register(Site(name="zeta"))
     register(Site(name="alpha", port=8001))
-    assert [site.name for site in sites()] == ["alpha", "zeta"]
+    assert [target.name for target in sites()] == ["alpha", "zeta"]
     assert get("alpha").port == 8001
 
 
