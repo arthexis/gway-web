@@ -78,101 +78,24 @@ gway_web/
 ├── service.py
 ├── config.py
 └── nginx/
-    ├── config.py
-    ├── sites.py
-    ├── proxy.py
-    └── tls.py
+    ├── discovery.py
+    └── render.py
 ```
 
 The `nginx` package is internal implementation structure, not a separate GWAY capability package.
 
-## Milestones
+## Roadmap
 
-### PR1 — minimal web model
+The active implementation roadmap is tracked in issue #6. The key ownership rule is that GWAY owns generated Nginx configuration. Certificate providers such as Certbot may issue and renew certificate material, but they must not rewrite GWAY-managed Nginx files.
 
-Establish the package primitives before touching host configuration.
+Current staged plan:
 
-- Define the `Site` model.
-- Implement the GWAY-style `site` constructor command.
-- Implement `url(site)`.
-- Implement endpoint reachability/status checks.
-- Implement HTTP health checks.
-- Provide a basic `serve(...)` facility for simple Python-side serving and development use.
-- Add tests and keep CI aligned with `ci-base`.
-
-PR1 should not write Nginx configuration.
-
-### PR2 — service/runtime integration
-
-Represent how a web application is actually running.
-
-- Support host/port, upstream URL, and later Unix sockets.
-- Expose application-oriented start/stop/restart/status/log operations where appropriate.
-- Delegate generic service/process operations to the relevant GWAY/system facilities rather than duplicating systemd management inside this package.
-
-### PR3 — domains and external URLs
-
-Add the portable concepts needed to expose an application.
-
-- Domain/hostname configuration.
-- Canonical HTTP/HTTPS URL generation.
-- Expected health endpoint.
-- Validation of application reachability before exposure.
-
-DNS-provider mutation remains outside this package. `gway-web` owns the desired hostname, not provider-specific DNS APIs.
-
-### PR4 — Nginx backend
-
-Implement Nginx directly inside `gway-web`.
-
-- Discover Nginx installation and configuration roots.
-- Render reverse-proxy and static-site configuration from `Site` intent.
-- Keep writes transactional: render first, validate before activation, and never replace a working configuration with an invalid one.
-- Support enable/disable/expose operations without requiring callers to know Nginx paths or syntax.
-- Add `nginx -t` validation and safe reloads.
-- Keep privileged operations explicit and compatible with GWAY admin/service permission handling.
-- Use temporary configuration roots in tests rather than modifying the host.
-
-The normal interface remains:
-
-```text
-gway web expose odoo
-gway web status odoo
-gway web reload
-```
-
-rather than requiring `gway nginx ...` commands.
-
-### PR5 — TLS
-
-Add TLS as part of exposing a web application.
-
-- Represent TLS intent independently of certificate-provider implementation.
-- Generate the appropriate Nginx configuration when Nginx is the selected backend.
-- Do not assume certificate issuance is always desired or available.
-- Keep certificate issuance/renewal integration separable from site modeling.
-
-### PR6 — Arthexis integration
-
-Use the generic web primitives from Arthexis without making Arthexis dependent on GWAY for normal operation.
-
-Arthexis can expose a site description equivalent to:
-
-```python
-Site(
-    name="arthexis",
-    domain=...,
-    host="127.0.0.1",
-    port=...,
-    health_path="/health/",
-)
-```
-
-Arthexis should implement its own GWAY-facing `site` command by enriching the arguments from its application-owned Site model and forwarding them to `gway web site`. The portable `gway-web` command remains unaware of Django and of Arthexis model internals.
-
-Then Arthexis diagnostics such as `gway arthexis good` can reuse `gway-web` health/status primitives, while deployment helpers can use the Nginx backend through the same application-facing API.
-
-Arthexis itself must remain independently installable and operable without GWAY.
+1. Nginx discovery and pure rendering.
+2. Transactional activation and host operations.
+3. TLS intent and existing certificate attachment.
+4. Certbot `certonly` integration.
+5. DNS-01 provider boundary.
+6. Existing-site adoption and Arthexis cutover.
 
 ## External applications
 
