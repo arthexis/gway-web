@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from gway_web.nginx import NginxLayout, disable, enable, expose
+from gway_web.nginx import NginxLayout, disable, enable, expose, reload as reload_nginx
 from gway_web.site import Site
 
 
@@ -25,7 +25,7 @@ def test_expose_activates_generated_site_after_validation(tmp_path, monkeypatch)
     layout = _layout(tmp_path)
     calls = []
     monkeypatch.setattr("gway_web.nginx.operations.test", lambda current: calls.append("test"))
-    monkeypatch.setattr("gway_web.nginx.operations.reload", lambda current: calls.append("reload"))
+    monkeypatch.setattr("gway_web.nginx.operations._reload", lambda current: calls.append("reload"))
 
     target = expose(Site(name="arthexis", domain="charge.example.com"), layout=layout)
 
@@ -43,17 +43,48 @@ def test_expose_restores_working_file_and_link_when_validation_fails(tmp_path, m
     old_target.write_text("old enabled\n", encoding="utf-8")
     enabled = layout.sites_enabled / target.name
     enabled.symlink_to(old_target)
+    calls = []
 
-    def fail(_layout):
-        raise RuntimeError("invalid nginx")
+    def fail_once(_layout):
+        calls.append("test")
+        if len(calls) == 1:
+            raise RuntimeError("invalid nginx")
 
-    monkeypatch.setattr("gway_web.nginx.operations.test", fail)
+    monkeypatch.setattr("gway_web.nginx.operations.test", fail_once)
+    monkeypatch.setattr("gway_web.nginx.operations._reload", lambda current: calls.append("reload"))
 
     with pytest.raises(RuntimeError, match="invalid nginx"):
         expose(Site(name="arthexis", domain="new.example.com"), layout=layout)
 
     assert target.read_text(encoding="utf-8") == "old config\n"
     assert enabled.readlink() == old_target
+    assert calls == ["test", "test", "reload"]
+
+
+def test_expose_restores_working_state_when_reload_fails(tmp_path, monkeypatch):
+    layout = _layout(tmp_path)
+    target = layout.sites_available / "gway-arthexis.conf"
+    target.write_text("old config\n", encoding="utf-8")
+    enabled = layout.sites_enabled / target.name
+    enabled.write_text("old enabled file\n", encoding="utf-8")
+    reload_calls = []
+
+    monkeypatch.setattr("gway_web.nginx.operations.test", lambda current: None)
+
+    def fail_once(_layout):
+        reload_calls.append("reload")
+        if len(reload_calls) == 1:
+            raise RuntimeError("reload failed")
+
+    monkeypatch.setattr("gway_web.nginx.operations._reload", fail_once)
+
+    with pytest.raises(RuntimeError, match="reload failed"):
+        expose(Site(name="arthexis", domain="new.example.com"), layout=layout)
+
+    assert target.read_text(encoding="utf-8") == "old config\n"
+    assert not enabled.is_symlink()
+    assert enabled.read_text(encoding="utf-8") == "old enabled file\n"
+    assert reload_calls == ["reload", "reload"]
 
 
 def test_enable_and_disable_are_transactional(tmp_path, monkeypatch):
@@ -63,13 +94,24 @@ def test_enable_and_disable_are_transactional(tmp_path, monkeypatch):
     target.write_text("server {}\n", encoding="utf-8")
     calls = []
     monkeypatch.setattr("gway_web.nginx.operations.test", lambda current: calls.append("test"))
-    monkeypatch.setattr("gway_web.nginx.operations.reload", lambda current: calls.append("reload"))
+    monkeypatch.setattr("gway_web.nginx.operations._reload", lambda current: calls.append("reload"))
 
     enabled = enable(site, layout=layout)
     assert enabled.is_symlink()
     disable(site, layout=layout)
     assert not enabled.exists()
     assert calls == ["test", "reload", "test", "reload"]
+
+
+def test_reload_validates_only_once(tmp_path, monkeypatch):
+    layout = _layout(tmp_path)
+    calls = []
+    monkeypatch.setattr("gway_web.nginx.operations.test", lambda current: calls.append("test"))
+    monkeypatch.setattr("gway_web.nginx.operations._reload", lambda current: calls.append("reload"))
+
+    reload_nginx(layout)
+
+    assert calls == ["test", "reload"]
 
 
 def test_expose_rejects_unsafe_site_filename(tmp_path):
