@@ -15,6 +15,7 @@ Core scope rule:
 Planned public operations:
 
 ```text
+gway web site <name> [--domain ...] [--host ...] [--port ...]
 gway web sites
 gway web status [site]
 gway web health [site]
@@ -31,7 +32,7 @@ Backend-specific implementation details should remain internal wherever possible
 
 ## Site model
 
-The package should define a small portable web-application description. A first version can look roughly like:
+The package defines a small portable web-application description:
 
 ```python
 Site(
@@ -39,9 +40,17 @@ Site(
     domain="example.com",
     host="127.0.0.1",
     port=8000,
-    health="/",
+    health_path="/health/",
 )
 ```
+
+The GWAY-style `site` command constructs the same portable description from command arguments:
+
+```text
+gway web site arthexis --domain example.com --host 127.0.0.1 --port 8000 --health-path /health/
+```
+
+Managed applications may expose their own `site` command and forward to `gway web site` after enriching these arguments from application-owned state. For example, Arthexis may read its own Site model and supply the resolved domain, bind address, port, scheme, and health path. `gway-web` must not import or depend on the application's model layer.
 
 The model should be usable for applications managed by GWAY as well as external applications such as Odoo. A site may later support an upstream URL or Unix socket, static root, TLS policy, and preferred exposure backend.
 
@@ -84,6 +93,7 @@ The `nginx` package is internal implementation structure, not a separate GWAY ca
 Establish the package primitives before touching host configuration.
 
 - Define the `Site` model.
+- Implement the GWAY-style `site` constructor command.
 - Implement `url(site)`.
 - Implement endpoint reachability/status checks.
 - Implement HTTP health checks.
@@ -154,9 +164,11 @@ Site(
     domain=...,
     host="127.0.0.1",
     port=...,
-    health="/health/",
+    health_path="/health/",
 )
 ```
+
+Arthexis should implement its own GWAY-facing `site` command by enriching the arguments from its application-owned Site model and forwarding them to `gway web site`. The portable `gway-web` command remains unaware of Django and of Arthexis model internals.
 
 Then Arthexis diagnostics such as `gway arthexis good` can reuse `gway-web` health/status primitives, while deployment helpers can use the Nginx backend through the same application-facing API.
 
@@ -172,7 +184,7 @@ Site(
     domain="erp.example.com",
     host="127.0.0.1",
     port=8069,
-    health="/web/login",
+    health_path="/web/login",
 )
 ```
 
