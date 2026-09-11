@@ -126,7 +126,7 @@ def wait_for_propagation(
 def _base_domain(domain: str) -> str:
     if not domain or domain in {".", ".."}:
         raise ValueError("domain is not safe for a DNS challenge")
-    base = domain[2:] if domain.startswith("*.") else domain
+    base = domain.removeprefix("*.")
     if not base or "/" in base or "\\" in base or any(character.isspace() for character in base):
         raise ValueError("domain is not safe for a DNS challenge")
     if "*" in base:
