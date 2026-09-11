@@ -6,7 +6,6 @@ from pathlib import Path
 
 from ..site import Site
 
-
 DEFAULT_ACME_WEBROOT = Path("/var/www/gway-acme")
 
 
