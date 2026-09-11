@@ -89,16 +89,18 @@ def _activate(layout: NginxLayout, rollback: Callable[[], None]) -> None:
         _reload(layout)
     except Exception:
         rollback()
-        recovery_failed = False
-        try:
-            test(layout)
-            _reload(layout)
-        except (subprocess.SubprocessError, OSError):
-            recovery_failed = True
-        if recovery_failed:
-            # Restored files remain the source of truth even if Nginx cannot be reloaded.
-            pass
+        _recover(layout)
         raise
+
+
+def _recover(layout: NginxLayout) -> None:
+    """Best-effort reload of restored state without masking activation failure."""
+
+    try:
+        test(layout)
+        _reload(layout)
+    except (subprocess.SubprocessError, OSError):
+        return
 
 
 def _reload(layout: NginxLayout) -> None:
