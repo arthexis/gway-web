@@ -44,6 +44,19 @@ def test_site_create_get_update_and_views(tmp_path: Path, monkeypatch: pytest.Mo
     assert read_sites(config)[0].port == 8070
 
 
+def test_site_name_with_dots_and_dashes_round_trips(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config = tmp_path / "web.toml"
+    monkeypatch.setenv("GWAY_WEB_CONFIG", str(config))
+
+    name = "api-v2.example.com"
+    created = commands.site(name, create=True, domain="api-v2.example.com", port=9000)
+
+    assert created.name == name
+    assert commands.site(name).name == name
+    assert read_sites(config)[0].name == name
+    assert '[sites."api-v2.example.com"]' in config.read_text()
+
+
 def test_site_requires_explicit_mutation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("GWAY_WEB_CONFIG", str(tmp_path / "web.toml"))
 
