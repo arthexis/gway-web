@@ -6,6 +6,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 from .discovery import NginxLayout, discover_nginx
 from .render import render_http_proxy
@@ -27,7 +28,7 @@ def reload(layout: NginxLayout | None = None) -> None:
 
     layout = layout or discover_nginx()
     test(layout)
-    subprocess.run([str(layout.executable), "-s", "reload"], check=True)
+    _reload(layout)
 
 
 def expose(site: Site, *, layout: NginxLayout | None = None) -> Path:
@@ -41,18 +42,16 @@ def expose(site: Site, *, layout: NginxLayout | None = None) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     enabled.parent.mkdir(parents=True, exist_ok=True)
     previous = target.read_bytes() if target.exists() else None
-    previous_link = enabled.readlink() if enabled.is_symlink() else None
+    previous_enabled = _snapshot_entry(enabled)
 
     _atomic_write(target, rendered)
     _atomic_symlink(target, enabled)
-    try:
-        test(layout)
-    except Exception:
-        _restore_file(target, previous)
-        _restore_link(enabled, previous_link)
-        raise
 
-    reload(layout)
+    def rollback() -> None:
+        _restore_file(target, previous)
+        _restore_entry(enabled, previous_enabled)
+
+    _activate(layout, rollback)
     return target
 
 
@@ -64,14 +63,9 @@ def enable(site: Site, *, layout: NginxLayout | None = None) -> Path:
     if not target.is_file():
         raise FileNotFoundError(f"site configuration does not exist: {target}")
     enabled = layout.sites_enabled / target.name
-    previous_link = enabled.readlink() if enabled.is_symlink() else None
+    previous_enabled = _snapshot_entry(enabled)
     _atomic_symlink(target, enabled)
-    try:
-        test(layout)
-    except Exception:
-        _restore_link(enabled, previous_link)
-        raise
-    reload(layout)
+    _activate(layout, lambda: _restore_entry(enabled, previous_enabled))
     return enabled
 
 
@@ -80,16 +74,35 @@ def disable(site: Site, *, layout: NginxLayout | None = None) -> Path:
 
     layout = layout or discover_nginx()
     enabled = layout.sites_enabled / _site_filename(site)
-    previous_link = enabled.readlink() if enabled.is_symlink() else None
+    previous_enabled = _snapshot_entry(enabled)
     if enabled.exists() or enabled.is_symlink():
         enabled.unlink()
+    _activate(layout, lambda: _restore_entry(enabled, previous_enabled))
+    return enabled
+
+
+def _activate(layout: NginxLayout, rollback: Callable[[], None]) -> None:
+    """Validate and reload, restoring the previous state if either step fails."""
+
     try:
         test(layout)
+        _reload(layout)
     except Exception:
-        _restore_link(enabled, previous_link)
+        rollback()
+        try:
+            test(layout)
+            _reload(layout)
+        except Exception:
+            # Preserve the activation error. The restored files remain the source of truth
+            # even if Nginx itself cannot currently be reloaded.
+            pass
         raise
-    reload(layout)
-    return enabled
+
+
+def _reload(layout: NginxLayout) -> None:
+    """Signal Nginx to reload without performing a second validation."""
+
+    subprocess.run([str(layout.executable), "-s", "reload"], check=True)
 
 
 def _site_filename(site: Site) -> str:
@@ -123,19 +136,36 @@ def _restore_file(path: Path, previous: bytes | None) -> None:
     if previous is None:
         path.unlink(missing_ok=True)
         return
+    _atomic_write_bytes(path, previous)
+
+
+def _snapshot_entry(path: Path) -> tuple[str, bytes | Path | None]:
+    if path.is_symlink():
+        return ("symlink", path.readlink())
+    if path.exists():
+        return ("file", path.read_bytes())
+    return ("missing", None)
+
+
+def _restore_entry(path: Path, previous: tuple[str, bytes | Path | None]) -> None:
+    kind, value = previous
+    path.unlink(missing_ok=True)
+    if kind == "symlink":
+        assert isinstance(value, Path)
+        path.symlink_to(value)
+    elif kind == "file":
+        assert isinstance(value, bytes)
+        _atomic_write_bytes(path, value)
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.restore.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
         with os.fdopen(fd, "wb") as stream:
-            stream.write(previous)
+            stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _restore_link(link: Path, previous: Path | None) -> None:
-    link.unlink(missing_ok=True)
-    if previous is not None:
-        link.symlink_to(previous)
