@@ -8,7 +8,10 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .certbot import DNSHooks, certificate_status, obtain, obtain_dns, renew
+from .certbot import DNSHooks, certificate_status
+from .certbot import obtain as certbot_obtain
+from .certbot import obtain_dns as certbot_obtain_dns
+from .certbot import renew as certbot_renew
 from .config import read_sites, write_sites
 from .health import health as probe_health
 from .health import status as probe_reachability
@@ -19,6 +22,7 @@ from .nginx import test as nginx_test
 from .nginx.discovery import discover_nginx
 from .registry import clear as clear_registry
 from .site import Site
+from .tls import certificate_paths
 
 
 def _one_name(values: tuple[str, ...], *, required: bool = False) -> str | None:
@@ -180,7 +184,7 @@ def serve(
             if dns:
                 if not auth_hook or not cleanup_hook:
                     raise ValueError("DNS issuance requires --auth-hook and --cleanup-hook")
-                obtain_dns(
+                certbot_obtain_dns(
                     target.domain,
                     email=email,
                     hooks=DNSHooks(auth_hook, cleanup_hook),
@@ -195,7 +199,7 @@ def serve(
                     tls_certificate_key=None,
                 )
                 nginx_expose(bootstrap)
-                obtain(bootstrap, email=email, agree_tos=True)
+                certbot_obtain(bootstrap, email=email, agree_tos=True)
     return nginx_expose(target)
 
 
@@ -229,20 +233,20 @@ def check(
     targets = [_configured_site(selected)] if selected else _configured_sites()
     explicit = any((reachability, health, public, certificate, nginx))
     if not explicit:
-        reachability = health = public = nginx = True
-        certificate = True
+        reachability = health = public = certificate = nginx = True
 
     results: list[dict[str, object]] = []
+    layout = None
     nginx_ok: bool | None = None
     nginx_detail = ""
     if nginx:
         try:
-            nginx_test()
+            layout = discover_nginx()
+            nginx_test(layout)
             nginx_ok, nginx_detail = True, "nginx configuration valid"
         except (subprocess.SubprocessError, OSError) as exc:
             nginx_ok, nginx_detail = False, str(exc)
 
-    layout = discover_nginx() if nginx else None
     for target in targets:
         if reachability:
             ok = probe_reachability(target, timeout=timeout)
@@ -261,19 +265,21 @@ def check(
             ok, detail = _public_check(target, timeout)
             results.append({"site": target.name, "check": "public", "ok": ok, "detail": detail})
         if certificate and target.tls and target.domain:
-            result = certificate_status(target.domain)
+            if target.cert_provider == "certbot":
+                result = certificate_status(target.domain)
+                ok, detail = result.ready, result.state
+            else:
+                cert, key = certificate_paths(target)
+                ok = cert.is_file() and key.is_file()
+                detail = f"certificate={cert}; key={key}"
             results.append(
-                {
-                    "site": target.name,
-                    "check": "certificate",
-                    "ok": result.ready,
-                    "detail": result.state,
-                }
+                {"site": target.name, "check": "certificate", "ok": ok, "detail": detail}
             )
-        if nginx and layout is not None:
-            enabled = layout.sites_enabled / f"gway-{target.name}.conf"
-            ok = bool(nginx_ok) and (enabled.exists() or enabled.is_symlink())
-            detail = nginx_detail if ok else f"{nginx_detail}; enabled={enabled.exists()}"
+        if nginx:
+            enabled = None if layout is None else layout.sites_enabled / f"gway-{target.name}.conf"
+            is_enabled = enabled is not None and (enabled.exists() or enabled.is_symlink())
+            ok = bool(nginx_ok) and is_enabled
+            detail = nginx_detail if ok else f"{nginx_detail}; enabled={is_enabled}"
             results.append({"site": target.name, "check": "nginx", "ok": ok, "detail": detail})
     return results
 
@@ -281,8 +287,8 @@ def check(
 def certificate(
     name: str,
     *,
-    obtain_now: bool = False,
-    renew_now: bool = False,
+    obtain: bool = False,
+    renew: bool = False,
     dns: bool = False,
     certbot: bool = False,
     email: str | None = None,
@@ -297,28 +303,28 @@ def certificate(
     target = _configured_site(name)
     if not target.domain:
         raise ValueError("certificate operations require a site domain")
-    if obtain_now and renew_now:
-        raise ValueError("--obtain-now and --renew-now are mutually exclusive")
+    if obtain and renew:
+        raise ValueError("--obtain and --renew are mutually exclusive")
     hooks = None
     if auth_hook or cleanup_hook:
         if not auth_hook or not cleanup_hook:
             raise ValueError("both --auth-hook and --cleanup-hook are required")
         hooks = DNSHooks(auth_hook, cleanup_hook)
-    if obtain_now:
+    if obtain:
         if not email:
             raise ValueError("certificate issuance requires --email")
         if dns:
             if hooks is None:
                 raise ValueError("DNS issuance requires auth and cleanup hooks")
-            return obtain_dns(
+            return certbot_obtain_dns(
                 target.domain,
                 email=email,
                 hooks=hooks,
                 agree_tos=agree_tos,
             )
-        return obtain(target, email=email, agree_tos=agree_tos)
-    if renew_now:
-        return renew(target.domain, dns_hooks=hooks, dry_run=dry_run)
+        return certbot_obtain(target, email=email, agree_tos=agree_tos)
+    if renew:
+        return certbot_renew(target.domain, dns_hooks=hooks, dry_run=dry_run)
     return certificate_status(target.domain)
 
 
