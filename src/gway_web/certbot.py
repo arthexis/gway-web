@@ -326,7 +326,9 @@ def _validate_domain(domain: str) -> None:
         raise ValueError("domain is not safe for Certbot certificate paths")
     if any(character.isspace() for character in domain):
         raise ValueError("domain is not safe for Certbot certificate paths")
-    if "*" in domain and not domain.startswith("*."):
+    if "*" in domain and (
+        not domain.startswith("*.") or "*" in domain.removeprefix("*.")
+    ):
         raise ValueError("wildcard is only allowed as the leading '*.' label")
 
 
