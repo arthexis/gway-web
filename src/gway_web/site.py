@@ -19,6 +19,7 @@ class Site:
     health_path: str = "/"
     tls: bool = False
     redirect_http: bool = True
+    cert_provider: str | None = None
     tls_certificate: str | Path | None = None
     tls_certificate_key: str | Path | None = None
 
@@ -33,10 +34,14 @@ class Site:
             raise ValueError("site scheme must be 'http' or 'https'")
         if not self.health_path.startswith("/"):
             raise ValueError("health_path must start with '/'")
+        if self.cert_provider is not None and not self.cert_provider.strip():
+            raise ValueError("cert_provider cannot be empty")
         if (self.tls_certificate is None) != (self.tls_certificate_key is None):
             raise ValueError("TLS certificate and key paths must be provided together")
         if self.tls_certificate is not None and not self.tls:
             raise ValueError("TLS certificate paths require tls=True")
+        if self.cert_provider is not None and not self.tls:
+            raise ValueError("certificate providers require tls=True")
 
     @property
     def upstream_url(self) -> str:
@@ -68,10 +73,11 @@ def site(
     health_path: str = "/",
     tls: bool = False,
     redirect_http: bool = True,
+    cert_provider: str | None = None,
     tls_certificate: str | Path | None = None,
     tls_certificate_key: str | Path | None = None,
 ) -> Site:
-    """Build a portable site description from GWAY command arguments."""
+    """Build a portable site description for Python callers."""
     return Site(
         name=name,
         domain=domain,
@@ -81,6 +87,7 @@ def site(
         health_path=health_path,
         tls=tls,
         redirect_http=redirect_http,
+        cert_provider=cert_provider,
         tls_certificate=tls_certificate,
         tls_certificate_key=tls_certificate_key,
     )
