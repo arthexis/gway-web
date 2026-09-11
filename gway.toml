@@ -4,4 +4,4 @@ aliases = ["gway-web"]
 
 [adapter]
 type = "python"
-module = "gway_web"
+module = "gway_web.commands"

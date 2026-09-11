@@ -13,4 +13,4 @@ def test_gway_manifest_exports_web_package() -> None:
 
     assert manifest["project"]["name"] == "web"
     assert "gway-web" in manifest["project"]["aliases"]
-    assert manifest["adapter"] == {"type": "python", "module": "gway_web"}
+    assert manifest["adapter"] == {"type": "python", "module": "gway_web.commands"}
