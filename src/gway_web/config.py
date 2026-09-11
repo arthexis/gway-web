@@ -45,7 +45,7 @@ def write_sites(items: list[Site], path: str | Path | None = None) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
     for item in sorted(items, key=lambda value: value.name):
-        lines.append(f"[sites.{item.name}]")
+        lines.append(f"[sites.{json.dumps(item.name)}]")
         values = {
             "domain": item.domain,
             "host": item.host,
