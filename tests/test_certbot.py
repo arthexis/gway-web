@@ -78,9 +78,18 @@ def test_obtain_uses_certonly_webroot_and_verifies_material(tmp_path, monkeypatc
         ),
         result,
     ]
-    monkeypatch.setattr("gway_web.certbot.certificate_status", lambda domain: statuses.pop(0))
-    monkeypatch.setattr("gway_web.certbot.discover_certbot", lambda executable=None: Path("/bin/certbot"))
-    monkeypatch.setattr("gway_web.certbot.subprocess.run", lambda command, check: calls.append(command))
+    monkeypatch.setattr(
+        "gway_web.certbot.certificate_status",
+        lambda domain: statuses.pop(0),
+    )
+    monkeypatch.setattr(
+        "gway_web.certbot.discover_certbot",
+        lambda executable=None: Path("/bin/certbot"),
+    )
+    monkeypatch.setattr(
+        "gway_web.certbot.subprocess.run",
+        lambda command, check: calls.append(command),
+    )
 
     obtained = obtain(
         Site(name="web", domain="example.com"),
@@ -114,8 +123,14 @@ def test_renew_requires_webroot_authenticator_and_uses_reload_hook(tmp_path, mon
     status = _status(tmp_path)
     calls = []
     monkeypatch.setattr("gway_web.certbot.certificate_status", lambda domain: status)
-    monkeypatch.setattr("gway_web.certbot.discover_certbot", lambda executable=None: Path("/bin/certbot"))
-    monkeypatch.setattr("gway_web.certbot.subprocess.run", lambda command, check: calls.append(command))
+    monkeypatch.setattr(
+        "gway_web.certbot.discover_certbot",
+        lambda executable=None: Path("/bin/certbot"),
+    )
+    monkeypatch.setattr(
+        "gway_web.certbot.subprocess.run",
+        lambda command, check: calls.append(command),
+    )
 
     renewed = renew("example.com")
 
