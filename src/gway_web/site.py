@@ -44,6 +44,25 @@ class Site:
         return f"{self.upstream_url}{self.health_path}"
 
 
+def site(
+    name: str,
+    domain: str | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    scheme: str = "http",
+    health_path: str = "/",
+) -> Site:
+    """Build a portable site description from GWAY command arguments."""
+    return Site(
+        name=name,
+        domain=domain,
+        host=host,
+        port=port,
+        scheme=scheme,
+        health_path=health_path,
+    )
+
+
 def _build_url(scheme: str, host: str, port: int | None) -> str:
     normalized_host = host
     if ":" in host and not host.startswith("["):

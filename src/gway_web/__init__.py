@@ -4,7 +4,7 @@ from .config import config_path, read_sites
 from .health import HealthResult, health, status
 from .registry import clear, get, load, load_config, register, resolve, sites, unregister
 from .serve import serve
-from .site import Site, upstream_url, url
+from .site import Site, site, upstream_url, url
 
 __all__ = [
     "HealthResult",
@@ -20,6 +20,7 @@ __all__ = [
     "register",
     "resolve",
     "serve",
+    "site",
     "sites",
     "status",
     "unregister",
