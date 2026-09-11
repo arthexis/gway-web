@@ -44,7 +44,9 @@ def test_site_create_get_update_and_views(tmp_path: Path, monkeypatch: pytest.Mo
     assert read_sites(config)[0].port == 8070
 
 
-def test_site_name_with_dots_and_dashes_round_trips(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_site_name_with_dots_and_dashes_round_trips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     config = tmp_path / "web.toml"
     monkeypatch.setenv("GWAY_WEB_CONFIG", str(config))
 
