@@ -1,0 +1,7 @@
+[project]
+name = "web"
+aliases = ["gway-web"]
+
+[adapter]
+type = "python"
+module = "gway_web"
