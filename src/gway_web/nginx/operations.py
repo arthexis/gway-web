@@ -5,12 +5,12 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
+from ..site import Site
 from .discovery import NginxLayout, discover_nginx
 from .render import render_http_proxy
-from ..site import Site
 
 
 def test(layout: NginxLayout | None = None) -> None:
@@ -92,10 +92,10 @@ def _activate(layout: NginxLayout, rollback: Callable[[], None]) -> None:
         try:
             test(layout)
             _reload(layout)
-        except Exception:
+        except (subprocess.SubprocessError, OSError):
             # Preserve the activation error. The restored files remain the source of truth
             # even if Nginx itself cannot currently be reloaded.
-            pass
+            return
         raise
 
 
