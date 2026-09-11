@@ -39,6 +39,8 @@ def test_site_command_builds_portable_site() -> None:
         health_path="/health/",
         tls=True,
         redirect_http=False,
+        tls_certificate="/certs/fullchain.pem",
+        tls_certificate_key="/certs/privkey.pem",
     )
 
     assert target == Site(
@@ -50,11 +52,24 @@ def test_site_command_builds_portable_site() -> None:
         health_path="/health/",
         tls=True,
         redirect_http=False,
+        tls_certificate="/certs/fullchain.pem",
+        tls_certificate_key="/certs/privkey.pem",
     )
 
 
 def test_site_command_uses_site_defaults() -> None:
     assert site("arthexis") == Site(name="arthexis")
+
+
+def test_tls_certificate_paths_are_a_pair() -> None:
+    with pytest.raises(ValueError, match="must be provided together"):
+        Site(name="arthexis", tls=True, tls_certificate="/certs/fullchain.pem")
+    with pytest.raises(ValueError, match="require tls=True"):
+        Site(
+            name="arthexis",
+            tls_certificate="/certs/fullchain.pem",
+            tls_certificate_key="/certs/privkey.pem",
+        )
 
 
 def test_registry_sorts_and_retrieves_sites() -> None:

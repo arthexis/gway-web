@@ -118,3 +118,49 @@ def test_expose_rejects_unsafe_site_filename(tmp_path):
     layout = _layout(tmp_path)
     with pytest.raises(ValueError, match="site name is not safe"):
         expose(Site(name="../escape"), layout=layout)
+
+
+def test_expose_attaches_existing_tls_certificate(tmp_path, monkeypatch):
+    layout = _layout(tmp_path)
+    certificate = tmp_path / "fullchain.pem"
+    key = tmp_path / "privkey.pem"
+    certificate.write_text("certificate\n", encoding="utf-8")
+    key.write_text("key\n", encoding="utf-8")
+    monkeypatch.setattr("gway_web.nginx.operations.test", lambda current: None)
+    monkeypatch.setattr("gway_web.nginx.operations._reload", lambda current: None)
+
+    target = expose(
+        Site(
+            name="arthexis",
+            domain="charge.example.com",
+            tls=True,
+            tls_certificate=certificate,
+            tls_certificate_key=key,
+        ),
+        layout=layout,
+    )
+
+    rendered = target.read_text(encoding="utf-8")
+    assert "listen 443 ssl;" in rendered
+    assert f"ssl_certificate {certificate};" in rendered
+    assert f"ssl_certificate_key {key};" in rendered
+
+
+def test_expose_rejects_missing_tls_certificate_before_mutation(tmp_path):
+    layout = _layout(tmp_path)
+    target = layout.sites_available / "gway-arthexis.conf"
+
+    with pytest.raises(FileNotFoundError, match="TLS certificate does not exist"):
+        expose(
+            Site(
+                name="arthexis",
+                domain="charge.example.com",
+                tls=True,
+                tls_certificate=tmp_path / "missing.pem",
+                tls_certificate_key=tmp_path / "missing-key.pem",
+            ),
+            layout=layout,
+        )
+
+    assert not target.exists()
+    assert not (layout.sites_enabled / target.name).exists()

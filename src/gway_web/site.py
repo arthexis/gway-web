@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlunsplit
 
 
@@ -18,6 +19,8 @@ class Site:
     health_path: str = "/"
     tls: bool = False
     redirect_http: bool = True
+    tls_certificate: str | Path | None = None
+    tls_certificate_key: str | Path | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -30,6 +33,10 @@ class Site:
             raise ValueError("site scheme must be 'http' or 'https'")
         if not self.health_path.startswith("/"):
             raise ValueError("health_path must start with '/'")
+        if (self.tls_certificate is None) != (self.tls_certificate_key is None):
+            raise ValueError("TLS certificate and key paths must be provided together")
+        if self.tls_certificate is not None and not self.tls:
+            raise ValueError("TLS certificate paths require tls=True")
 
     @property
     def upstream_url(self) -> str:
@@ -61,6 +68,8 @@ def site(
     health_path: str = "/",
     tls: bool = False,
     redirect_http: bool = True,
+    tls_certificate: str | Path | None = None,
+    tls_certificate_key: str | Path | None = None,
 ) -> Site:
     """Build a portable site description from GWAY command arguments."""
     return Site(
@@ -72,6 +81,8 @@ def site(
         health_path=health_path,
         tls=tls,
         redirect_http=redirect_http,
+        tls_certificate=tls_certificate,
+        tls_certificate_key=tls_certificate_key,
     )
 
 

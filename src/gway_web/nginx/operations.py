@@ -9,8 +9,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..site import Site
+from ..tls import validate_certificate_files
 from .discovery import NginxLayout, discover_nginx
-from .render import render_http_proxy
+from .render import render_proxy
 
 
 def test(layout: NginxLayout | None = None) -> None:
@@ -37,7 +38,8 @@ def expose(site: Site, *, layout: NginxLayout | None = None) -> Path:
     layout = layout or discover_nginx()
     target = layout.sites_available / _site_filename(site)
     enabled = layout.sites_enabled / target.name
-    rendered = render_http_proxy(site)
+    validate_certificate_files(site)
+    rendered = render_proxy(site)
 
     target.parent.mkdir(parents=True, exist_ok=True)
     enabled.parent.mkdir(parents=True, exist_ok=True)
