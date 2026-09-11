@@ -29,7 +29,9 @@ def test_render_http_proxy_is_deterministic():
         health_path="/health/",
     )
 
-    assert render_http_proxy(site) == """server {
+    assert (
+        render_http_proxy(site)
+        == """server {
     listen 80;
     server_name charge.example.com;
 
@@ -50,6 +52,7 @@ def test_render_http_proxy_is_deterministic():
     }
 }
 """
+    )
 
 
 def test_render_http_proxy_can_omit_acme_location():
