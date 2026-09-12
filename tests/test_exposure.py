@@ -35,21 +35,43 @@ class FakeProvider:
         self._records = [item for item in self._records if item != record]
 
 
+def _patch_nginx_transaction(monkeypatch):
+    state = object()
+    restored = []
+    monkeypatch.setattr(exposure, "nginx_snapshot", lambda site: state)
+    monkeypatch.setattr(exposure, "nginx_restore", restored.append)
+    return state, restored
+
+
 def _patch_live_success(monkeypatch) -> None:
     monkeypatch.setattr(
         exposure,
         "_public_tls",
-        lambda fqdn, timeout: {"ok": True, "fqdn": fqdn},
+        lambda fqdn, timeout, public_address=None: {
+            "ok": True,
+            "fqdn": fqdn,
+            "address": public_address,
+        },
     )
+
+
+def test_dependency_exposure_rejects_non_loopback_upstream() -> None:
+    with pytest.raises(ValueError, match="loopback upstream"):
+        exposure._site_for(
+            "register.example.com",
+            "http://10.0.0.5:8787",
+            "/health",
+            tls=False,
+        )
 
 
 def test_ensure_uses_exact_fqdn_and_persists_only_after_public_health(monkeypatch) -> None:
     provider = FakeProvider([DNSRecord("register.example.com", "A", "203.0.113.10")])
     exposed = []
     persisted = []
+    _patch_nginx_transaction(monkeypatch)
     monkeypatch.setattr(exposure, "_provider", lambda *args, **kwargs: provider)
     monkeypatch.setattr(exposure, "nginx_expose", lambda site: exposed.append(site) or None)
-    monkeypatch.setattr(exposure, "nginx_disable", lambda site: None)
     monkeypatch.setattr(
         exposure,
         "certificate_status",
@@ -64,7 +86,12 @@ def test_ensure_uses_exact_fqdn_and_persists_only_after_public_health(monkeypatc
     monkeypatch.setattr(
         exposure,
         "_public_health",
-        lambda site, timeout: {"ok": True, "url": f"{site.url}/health", "status": 200},
+        lambda site, timeout, public_address=None: {
+            "ok": True,
+            "url": f"{site.url}/health",
+            "address": public_address,
+            "status": 200,
+        },
     )
     monkeypatch.setattr(exposure, "_persist", persisted.append)
 
@@ -84,13 +111,13 @@ def test_ensure_uses_exact_fqdn_and_persists_only_after_public_health(monkeypatc
     assert persisted[0].port == 8787
 
 
-def test_ensure_restores_dns_and_does_not_persist_on_public_failure(monkeypatch) -> None:
+def test_ensure_restores_dns_and_nginx_on_public_failure(monkeypatch) -> None:
     original = DNSRecord("register.example.com", "A", "203.0.113.10")
     provider = FakeProvider([original])
     persisted = []
+    state, restored = _patch_nginx_transaction(monkeypatch)
     monkeypatch.setattr(exposure, "_provider", lambda *args, **kwargs: provider)
     monkeypatch.setattr(exposure, "nginx_expose", lambda site: None)
-    monkeypatch.setattr(exposure, "nginx_disable", lambda site: None)
     monkeypatch.setattr(
         exposure,
         "certificate_status",
@@ -105,7 +132,11 @@ def test_ensure_restores_dns_and_does_not_persist_on_public_failure(monkeypatch)
     monkeypatch.setattr(
         exposure,
         "_public_health",
-        lambda site, timeout: {"ok": False, "status": 503},
+        lambda site, timeout, public_address=None: {
+            "ok": False,
+            "address": public_address,
+            "status": 503,
+        },
     )
     monkeypatch.setattr(exposure, "_persist", persisted.append)
 
@@ -120,13 +151,30 @@ def test_ensure_restores_dns_and_does_not_persist_on_public_failure(monkeypatch)
 
     assert persisted == []
     assert provider.records("register.example.com", "A") == [original]
+    assert restored == [state]
+
+
+def test_invalid_upstream_is_rejected_before_dns_mutation(monkeypatch) -> None:
+    provider = FakeProvider([DNSRecord("register.example.com", "A", "203.0.113.10")])
+    monkeypatch.setattr(exposure, "_provider", lambda *args, **kwargs: provider)
+    with pytest.raises(ValueError, match="loopback upstream"):
+        exposure.ensure(
+            fqdn="register.example.com",
+            upstream="http://10.0.0.5:8787",
+            dns_provider="godaddy",
+            dns_zone="example.com",
+            public_address="198.51.100.9",
+        )
+    assert provider.records("register.example.com", "A") == [
+        DNSRecord("register.example.com", "A", "203.0.113.10")
+    ]
 
 
 def test_ensure_refuses_to_persist_when_live_tls_is_invalid(monkeypatch) -> None:
     persisted = []
+    _patch_nginx_transaction(monkeypatch)
     monkeypatch.setattr(exposure, "_provider", lambda *args, **kwargs: None)
     monkeypatch.setattr(exposure, "nginx_expose", lambda site: None)
-    monkeypatch.setattr(exposure, "nginx_disable", lambda site: None)
     monkeypatch.setattr(
         exposure,
         "certificate_status",
@@ -140,7 +188,12 @@ def test_ensure_refuses_to_persist_when_live_tls_is_invalid(monkeypatch) -> None
     monkeypatch.setattr(
         exposure,
         "_public_tls",
-        lambda fqdn, timeout: {"ok": False, "fqdn": fqdn, "error": "expired"},
+        lambda fqdn, timeout, public_address=None: {
+            "ok": False,
+            "fqdn": fqdn,
+            "address": public_address,
+            "error": "expired",
+        },
     )
     monkeypatch.setattr(exposure, "_persist", persisted.append)
 
@@ -169,12 +222,22 @@ def test_check_folds_live_tls_failure_into_certificate_readiness(monkeypatch) ->
     monkeypatch.setattr(
         exposure,
         "_public_tls",
-        lambda fqdn, timeout: {"ok": False, "fqdn": fqdn, "error": "expired"},
+        lambda fqdn, timeout, public_address=None: {
+            "ok": False,
+            "fqdn": fqdn,
+            "address": public_address,
+            "error": "expired",
+        },
     )
     monkeypatch.setattr(
         exposure,
         "_public_health",
-        lambda site, timeout: {"ok": False, "status": None, "error": "expired"},
+        lambda site, timeout, public_address=None: {
+            "ok": False,
+            "address": public_address,
+            "status": None,
+            "error": "expired",
+        },
     )
 
     result = exposure.check(fqdn="register.example.com")
@@ -187,6 +250,7 @@ def test_check_folds_live_tls_failure_into_certificate_readiness(monkeypatch) ->
 
 def test_ensure_requires_address_only_for_new_dns_record(monkeypatch) -> None:
     provider = FakeProvider()
+    _patch_nginx_transaction(monkeypatch)
     monkeypatch.setattr(exposure, "_provider", lambda *args, **kwargs: provider)
     with pytest.raises(ValueError, match="public_address is required"):
         exposure.ensure(
@@ -195,3 +259,36 @@ def test_ensure_requires_address_only_for_new_dns_record(monkeypatch) -> None:
             dns_provider="godaddy",
             dns_zone="example.com",
         )
+
+
+def test_release_reports_partial_dns_failure(monkeypatch) -> None:
+    site = exposure._site_for(
+        "register.example.com",
+        "http://127.0.0.1:8787",
+        "/health",
+        tls=True,
+    )
+    provider = FakeProvider([DNSRecord("register.example.com", "A", "203.0.113.10")])
+    monkeypatch.setattr(exposure, "read_sites", lambda: [site])
+    monkeypatch.setattr(exposure, "_provider", lambda *args, **kwargs: provider)
+    monkeypatch.setattr(exposure, "nginx_snapshot", lambda target: object())
+    monkeypatch.setattr(exposure, "nginx_disable", lambda target: None)
+    monkeypatch.setattr(exposure, "write_sites", lambda sites: None)
+    monkeypatch.setattr(exposure, "clear_registry", lambda: None)
+    monkeypatch.setattr(
+        provider,
+        "delete_record",
+        lambda record: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
+    )
+
+    result = exposure.release(
+        fqdn="register.example.com",
+        dns_provider="godaddy",
+        dns_zone="example.com",
+        public_address="203.0.113.10",
+    )
+
+    assert result["released"] is False
+    assert result["partial"] is True
+    assert result["local_released"] is True
+    assert result["stage"] == "dns"
