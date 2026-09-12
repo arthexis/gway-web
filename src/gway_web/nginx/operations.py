@@ -6,12 +6,23 @@ import os
 import subprocess
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..site import Site
 from ..tls import validate_certificate_files
 from .discovery import NginxLayout, discover_nginx
 from .render import render_proxy
+
+
+@dataclass(frozen=True, slots=True)
+class NginxSiteSnapshot:
+    """Restorable available/enabled state for one managed Nginx site."""
+
+    target: Path
+    enabled: Path
+    available: bytes | None
+    enabled_entry: tuple[str, bytes | Path | None]
 
 
 def test(layout: NginxLayout | None = None) -> None:
@@ -28,6 +39,34 @@ def reload(layout: NginxLayout | None = None) -> None:
     """Reload Nginx after validating its active configuration."""
 
     layout = layout or discover_nginx()
+    test(layout)
+    _reload(layout)
+
+
+def snapshot(site: Site, *, layout: NginxLayout | None = None) -> NginxSiteSnapshot:
+    """Capture one site's generated and enabled entries before a larger transaction."""
+
+    layout = layout or discover_nginx()
+    target = layout.sites_available / _site_filename(site)
+    enabled = layout.sites_enabled / target.name
+    return NginxSiteSnapshot(
+        target=target,
+        enabled=enabled,
+        available=target.read_bytes() if target.exists() else None,
+        enabled_entry=_snapshot_entry(enabled),
+    )
+
+
+def restore(
+    state: NginxSiteSnapshot,
+    *,
+    layout: NginxLayout | None = None,
+) -> None:
+    """Restore a previously captured site snapshot and reload Nginx."""
+
+    layout = layout or discover_nginx()
+    _restore_file(state.target, state.available)
+    _restore_entry(state.enabled, state.enabled_entry)
     test(layout)
     _reload(layout)
 
@@ -126,7 +165,7 @@ def _atomic_write(path: Path, content: str) -> None:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
 
