@@ -152,6 +152,39 @@ def test_ensure_refuses_to_persist_when_live_tls_is_invalid(monkeypatch) -> None
     assert persisted == []
 
 
+def test_check_folds_live_tls_failure_into_certificate_readiness(monkeypatch) -> None:
+    site = exposure._site_for(
+        "register.example.com",
+        "http://127.0.0.1:8787",
+        "/health",
+        tls=True,
+    )
+    monkeypatch.setattr(exposure, "read_sites", lambda: [site])
+    monkeypatch.setattr(exposure, "_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        exposure,
+        "site_check",
+        lambda name, timeout: [{"check": "certificate", "ok": True, "state": "managed"}],
+    )
+    monkeypatch.setattr(
+        exposure,
+        "_public_tls",
+        lambda fqdn, timeout: {"ok": False, "fqdn": fqdn, "error": "expired"},
+    )
+    monkeypatch.setattr(
+        exposure,
+        "_public_health",
+        lambda site, timeout: {"ok": False, "status": None, "error": "expired"},
+    )
+
+    result = exposure.check(fqdn="register.example.com")
+    certificate = next(item for item in result["checks"] if item["check"] == "certificate")
+
+    assert result["ok"] is False
+    assert certificate["ok"] is False
+    assert certificate["live_tls"]["error"] == "expired"
+
+
 def test_ensure_requires_address_only_for_new_dns_record(monkeypatch) -> None:
     provider = FakeProvider()
     monkeypatch.setattr(exposure, "_provider", lambda *args, **kwargs: provider)
