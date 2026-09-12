@@ -218,6 +218,8 @@ def renew(
     current = certificate_status(domain)
     if current.state != "managed":
         raise RuntimeError(f"cannot renew Certbot certificate in {current.state!r} state")
+    if deploy_hook is None and current.ready and not dry_run:
+        return current
     authenticator = _renewal_authenticator(current.renewal_config)
 
     manual_args: list[str] = []
