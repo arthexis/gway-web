@@ -6,20 +6,21 @@ certificate lifecycle, and public reachability for the exact FQDN requested.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import socket
 import ssl
 from pathlib import Path
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
 
 from .certbot import certificate_status, obtain as certbot_obtain, renew as certbot_renew
 from .commands import check as site_check
 from .config import read_sites, write_sites
 from .nginx import disable as nginx_disable
 from .nginx import expose as nginx_expose
+from .nginx import restore as nginx_restore
+from .nginx import snapshot as nginx_snapshot
 from .public_dns import DNSRecord, GoDaddyPublicDNSProvider, PublicDNSProvider
 from .registry import clear as clear_registry
 from .site import Site
@@ -43,8 +44,18 @@ def _upstream(value: str) -> tuple[str, str, int]:
         raise ValueError("upstream must be an http(s) URL with a host")
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
         raise ValueError("upstream must not include a path, query, or fragment")
+
+    host = parsed.hostname
+    if host != "localhost":
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError as exc:
+            raise ValueError("dependency-facing exposure requires a loopback upstream") from exc
+        if not address.is_loopback:
+            raise ValueError("dependency-facing exposure requires a loopback upstream")
+
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    return parsed.scheme, parsed.hostname, port
+    return parsed.scheme, host, port
 
 
 def _secret(direct: str, file_var: str) -> str:
@@ -101,33 +112,89 @@ def _persist(target: Site) -> None:
     clear_registry()
 
 
-def _public_health(target: Site, timeout: float) -> dict[str, object]:
+def _http_status(stream, *, fqdn: str, path: str) -> int:
+    request = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {fqdn}\r\n"
+        "Connection: close\r\n"
+        "User-Agent: gway-web/0.1\r\n\r\n"
+    ).encode("ascii")
+    stream.sendall(request)
+    response = bytearray()
+    while b"\r\n" not in response and len(response) < 8192:
+        chunk = stream.recv(1024)
+        if not chunk:
+            break
+        response.extend(chunk)
+    first_line = bytes(response).split(b"\r\n", 1)[0]
+    parts = first_line.split()
+    if len(parts) < 2 or not parts[0].startswith(b"HTTP/"):
+        raise OSError("public endpoint returned an invalid HTTP response")
+    try:
+        return int(parts[1])
+    except ValueError as exc:
+        raise OSError("public endpoint returned an invalid HTTP status") from exc
+
+
+def _public_health(
+    target: Site,
+    timeout: float,
+    public_address: str | None = None,
+) -> dict[str, object]:
+    fqdn = target.domain or target.host
+    connect_host = public_address or fqdn
+    port = 443 if target.tls else 80
     url = f"{target.url}{target.health_path}"
     try:
-        with urlopen(Request(url, method="GET"), timeout=timeout) as response:  # noqa: S310
-            status = response.getcode()
-            return {"ok": 200 <= status < 400, "url": url, "status": status}
-    except HTTPError as exc:
-        return {"ok": False, "url": url, "status": exc.code, "error": str(exc)}
-    except (URLError, OSError) as exc:
-        return {"ok": False, "url": url, "status": None, "error": str(exc)}
+        with socket.create_connection((connect_host, port), timeout=timeout) as raw:
+            if target.tls:
+                context = ssl.create_default_context()
+                with context.wrap_socket(raw, server_hostname=fqdn) as wrapped:
+                    status = _http_status(wrapped, fqdn=fqdn, path=target.health_path)
+            else:
+                status = _http_status(raw, fqdn=fqdn, path=target.health_path)
+        return {
+            "ok": 200 <= status < 400,
+            "url": url,
+            "address": public_address,
+            "status": status,
+        }
+    except (OSError, ssl.SSLError, ssl.CertificateError) as exc:
+        return {
+            "ok": False,
+            "url": url,
+            "address": public_address,
+            "status": None,
+            "error": str(exc),
+        }
 
 
-def _public_tls(fqdn: str, timeout: float) -> dict[str, object]:
+def _public_tls(
+    fqdn: str,
+    timeout: float,
+    public_address: str | None = None,
+) -> dict[str, object]:
     """Verify the live HTTPS certificate chain, expiry, and hostname."""
     context = ssl.create_default_context()
+    connect_host = public_address or fqdn
     try:
-        with socket.create_connection((fqdn, 443), timeout=timeout) as raw:
+        with socket.create_connection((connect_host, 443), timeout=timeout) as raw:
             with context.wrap_socket(raw, server_hostname=fqdn) as wrapped:
                 certificate = wrapped.getpeercert()
                 return {
                     "ok": True,
                     "fqdn": fqdn,
+                    "address": public_address,
                     "subject": certificate.get("subject"),
                     "not_after": certificate.get("notAfter"),
                 }
     except (OSError, ssl.SSLError, ssl.CertificateError) as exc:
-        return {"ok": False, "fqdn": fqdn, "error": str(exc)}
+        return {
+            "ok": False,
+            "fqdn": fqdn,
+            "address": public_address,
+            "error": str(exc),
+        }
 
 
 def ensure(
@@ -147,36 +214,38 @@ def ensure(
     target_fqdn = _fqdn(fqdn)
     if not health_path.startswith("/"):
         raise ValueError("health_path must start with '/'")
+
+    # Validate all local input and capture the pre-transaction Nginx state before
+    # mutating any external provider state.
+    bootstrap = _site_for(target_fqdn, upstream, health_path, tls=False)
     provider = _provider(dns_provider, dns_zone)
+    previous_nginx = nginx_snapshot(bootstrap)
     previous_records: list[DNSRecord] | None = None
     address = public_address.strip() if public_address else None
+    nginx_changed = False
 
-    if provider is not None:
-        previous_records = list(provider.records(target_fqdn, "A"))
-        if address is None:
-            if not previous_records:
-                raise ValueError(
-                    "public_address is required when the FQDN has no existing A record"
-                )
-            address = previous_records[0].value
-        provider.ensure_record(DNSRecord(target_fqdn, "A", address))
-
-    bootstrap = _site_for(target_fqdn, upstream, health_path, tls=False)
-    activated = False
     try:
+        if provider is not None:
+            previous_records = list(provider.records(target_fqdn, "A"))
+            if address is None:
+                if not previous_records:
+                    raise ValueError(
+                        "public_address is required when the FQDN has no existing A record"
+                    )
+                address = previous_records[0].value
+            provider.ensure_record(DNSRecord(target_fqdn, "A", address))
+
         if certbot:
             # HTTP first so HTTP-01 can work even when the previous/default HTTPS
             # certificate is expired or belongs to another virtual host.
             nginx_expose(bootstrap)
-            activated = True
+            nginx_changed = True
             status = certificate_status(target_fqdn)
             if status.state == "managed":
                 status = certbot_renew(target_fqdn, deploy_hook=None)
             elif status.state == "missing":
                 if not email:
-                    raise ValueError(
-                        "certificate issuance requires email (or GWAY_CERTBOT_EMAIL from caller)"
-                    )
+                    raise ValueError("certificate issuance requires an email address")
                 status = certbot_obtain(bootstrap, email=email, agree_tos=agree_tos)
             else:
                 raise RuntimeError(
@@ -189,11 +258,13 @@ def ensure(
             target = bootstrap
 
         nginx_expose(target)
-        activated = True
-        tls_result = _public_tls(target_fqdn, timeout) if target.tls else {"ok": True}
+        nginx_changed = True
+        tls_result = (
+            _public_tls(target_fqdn, timeout, address) if target.tls else {"ok": True}
+        )
         if not tls_result["ok"]:
             raise RuntimeError(f"public TLS check failed: {tls_result}")
-        public = _public_health(target, timeout)
+        public = _public_health(target, timeout, address)
         if not public["ok"]:
             raise RuntimeError(f"public health check failed: {public}")
         _persist(target)
@@ -207,9 +278,9 @@ def ensure(
             "public": public,
         }
     except Exception:
-        if activated:
+        if nginx_changed:
             try:
-                nginx_disable(bootstrap)
+                nginx_restore(previous_nginx)
             except Exception:
                 pass
         if provider is not None and previous_records is not None:
@@ -236,17 +307,18 @@ def check(
     )
     results: list[dict[str, object]] = []
     provider = _provider(dns_provider, dns_zone)
+    address = public_address.strip() if public_address else None
     if provider is not None:
         records = list(provider.records(target_fqdn, "A"))
         values = [item.value for item in records]
-        ok = bool(values) and (public_address is None or public_address in values)
-        results.append(
-            {"check": "dns", "ok": ok, "values": values, "expected": public_address}
-        )
+        ok = bool(values) and (address is None or address in values)
+        results.append({"check": "dns", "ok": ok, "values": values, "expected": address})
     if configured is None:
         results.append({"check": "managed", "ok": False, "detail": "FQDN is not managed"})
     else:
-        tls_result = _public_tls(target_fqdn, timeout) if configured.tls else None
+        tls_result = (
+            _public_tls(target_fqdn, timeout, address) if configured.tls else None
+        )
         for item in site_check(configured.name, timeout=timeout):
             observed = {"check": item["check"], **item}
             if item["check"] == "certificate" and tls_result is not None:
@@ -255,7 +327,9 @@ def check(
             results.append(observed)
         if tls_result is not None:
             results.append(tls_result | {"check": "tls"})
-        results.append(_public_health(configured, timeout) | {"check": "public_health"})
+        results.append(
+            _public_health(configured, timeout, address) | {"check": "public_health"}
+        )
     return {
         "fqdn": target_fqdn,
         "ok": bool(results) and all(bool(item.get("ok")) for item in results),
@@ -279,14 +353,53 @@ def release(
     )
     if target is None:
         return {"fqdn": target_fqdn, "released": False, "reason": "not-managed"}
-    nginx_disable(target)
-    write_sites([item for item in sites if item != target])
-    clear_registry()
+
+    provider = _provider(dns_provider, dns_zone)
+    address = public_address.strip() if public_address else None
+    previous_nginx = nginx_snapshot(target)
+    remaining = [item for item in sites if item != target]
+
+    try:
+        nginx_disable(target)
+    except Exception as exc:
+        return {
+            "fqdn": target_fqdn,
+            "released": False,
+            "stage": "nginx",
+            "error": str(exc),
+        }
+
+    try:
+        write_sites(remaining)
+        clear_registry()
+    except Exception as exc:
+        restored = True
+        try:
+            nginx_restore(previous_nginx)
+        except Exception:
+            restored = False
+        return {
+            "fqdn": target_fqdn,
+            "released": False,
+            "stage": "manifest",
+            "nginx_restored": restored,
+            "error": str(exc),
+        }
 
     dns_removed = False
-    provider = _provider(dns_provider, dns_zone)
-    if provider is not None and public_address:
-        record = DNSRecord(target_fqdn, "A", public_address)
-        provider.delete_record(record)
-        dns_removed = True
+    if provider is not None and address:
+        try:
+            provider.delete_record(DNSRecord(target_fqdn, "A", address))
+            dns_removed = True
+        except Exception as exc:
+            return {
+                "fqdn": target_fqdn,
+                "released": False,
+                "partial": True,
+                "local_released": True,
+                "dns_removed": False,
+                "stage": "dns",
+                "error": str(exc),
+            }
+
     return {"fqdn": target_fqdn, "released": True, "dns_removed": dns_removed}
