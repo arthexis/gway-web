@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import re
+import socket
+import ssl
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -111,6 +113,23 @@ def _public_health(target: Site, timeout: float) -> dict[str, object]:
         return {"ok": False, "url": url, "status": None, "error": str(exc)}
 
 
+def _public_tls(fqdn: str, timeout: float) -> dict[str, object]:
+    """Verify the live HTTPS certificate chain, expiry, and hostname."""
+    context = ssl.create_default_context()
+    try:
+        with socket.create_connection((fqdn, 443), timeout=timeout) as raw:
+            with context.wrap_socket(raw, server_hostname=fqdn) as wrapped:
+                certificate = wrapped.getpeercert()
+                return {
+                    "ok": True,
+                    "fqdn": fqdn,
+                    "subject": certificate.get("subject"),
+                    "not_after": certificate.get("notAfter"),
+                }
+    except (OSError, ssl.SSLError, ssl.CertificateError) as exc:
+        return {"ok": False, "fqdn": fqdn, "error": str(exc)}
+
+
 def ensure(
     *,
     fqdn: str,
@@ -171,6 +190,9 @@ def ensure(
 
         nginx_expose(target)
         activated = True
+        tls_result = _public_tls(target_fqdn, timeout) if target.tls else {"ok": True}
+        if not tls_result["ok"]:
+            raise RuntimeError(f"public TLS check failed: {tls_result}")
         public = _public_health(target, timeout)
         if not public["ok"]:
             raise RuntimeError(f"public health check failed: {public}")
@@ -181,7 +203,7 @@ def ensure(
             "upstream": upstream,
             "dns_provider": dns_provider,
             "public_address": address,
-            "tls": target.tls,
+            "tls": tls_result,
             "public": public,
         }
     except Exception:
@@ -226,6 +248,8 @@ def check(
     else:
         for item in site_check(configured.name, timeout=timeout):
             results.append({"check": item["check"], **item})
+        if configured.tls:
+            results.append(_public_tls(target_fqdn, timeout) | {"check": "tls"})
         results.append(_public_health(configured, timeout) | {"check": "public_health"})
     return {
         "fqdn": target_fqdn,
