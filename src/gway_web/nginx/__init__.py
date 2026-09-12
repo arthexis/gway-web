@@ -1,11 +1,12 @@
 """Internal Nginx backend primitives for gway-web."""
 
 from .discovery import NginxLayout, discover_nginx
-from .operations import disable, enable, expose, reload, test
+from .operations import NginxSiteSnapshot, disable, enable, expose, reload, restore, snapshot, test
 from .render import render_http_proxy, render_proxy
 
 __all__ = [
     "NginxLayout",
+    "NginxSiteSnapshot",
     "disable",
     "discover_nginx",
     "enable",
@@ -13,5 +14,7 @@ __all__ = [
     "reload",
     "render_http_proxy",
     "render_proxy",
+    "restore",
+    "snapshot",
     "test",
 ]
