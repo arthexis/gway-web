@@ -35,6 +35,14 @@ class FakeProvider:
         self._records = [item for item in self._records if item != record]
 
 
+def _patch_live_success(monkeypatch) -> None:
+    monkeypatch.setattr(
+        exposure,
+        "_public_tls",
+        lambda fqdn, timeout: {"ok": True, "fqdn": fqdn},
+    )
+
+
 def test_ensure_uses_exact_fqdn_and_persists_only_after_public_health(monkeypatch) -> None:
     provider = FakeProvider([DNSRecord("register.example.com", "A", "203.0.113.10")])
     exposed = []
@@ -52,6 +60,7 @@ def test_ensure_uses_exact_fqdn_and_persists_only_after_public_health(monkeypatc
         "certbot_renew",
         lambda fqdn, deploy_hook=None: SimpleNamespace(state="managed", ready=True),
     )
+    _patch_live_success(monkeypatch)
     monkeypatch.setattr(
         exposure,
         "_public_health",
@@ -68,6 +77,7 @@ def test_ensure_uses_exact_fqdn_and_persists_only_after_public_health(monkeypatc
 
     assert result["success"] is True
     assert result["fqdn"] == "register.example.com"
+    assert result["tls"]["ok"] is True
     assert [item.domain for item in exposed] == ["register.example.com", "register.example.com"]
     assert persisted[0].domain == "register.example.com"
     assert persisted[0].host == "127.0.0.1"
@@ -91,6 +101,7 @@ def test_ensure_restores_dns_and_does_not_persist_on_public_failure(monkeypatch)
         "certbot_renew",
         lambda fqdn, deploy_hook=None: SimpleNamespace(state="managed", ready=True),
     )
+    _patch_live_success(monkeypatch)
     monkeypatch.setattr(
         exposure,
         "_public_health",
@@ -109,6 +120,36 @@ def test_ensure_restores_dns_and_does_not_persist_on_public_failure(monkeypatch)
 
     assert persisted == []
     assert provider.records("register.example.com", "A") == [original]
+
+
+def test_ensure_refuses_to_persist_when_live_tls_is_invalid(monkeypatch) -> None:
+    persisted = []
+    monkeypatch.setattr(exposure, "_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(exposure, "nginx_expose", lambda site: None)
+    monkeypatch.setattr(exposure, "nginx_disable", lambda site: None)
+    monkeypatch.setattr(
+        exposure,
+        "certificate_status",
+        lambda fqdn: SimpleNamespace(state="managed", ready=True),
+    )
+    monkeypatch.setattr(
+        exposure,
+        "certbot_renew",
+        lambda fqdn, deploy_hook=None: SimpleNamespace(state="managed", ready=True),
+    )
+    monkeypatch.setattr(
+        exposure,
+        "_public_tls",
+        lambda fqdn, timeout: {"ok": False, "fqdn": fqdn, "error": "expired"},
+    )
+    monkeypatch.setattr(exposure, "_persist", persisted.append)
+
+    with pytest.raises(RuntimeError, match="public TLS check failed"):
+        exposure.ensure(
+            fqdn="register.example.com",
+            upstream="http://127.0.0.1:8787",
+        )
+    assert persisted == []
 
 
 def test_ensure_requires_address_only_for_new_dns_record(monkeypatch) -> None:
