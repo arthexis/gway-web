@@ -358,8 +358,26 @@ def _validate_token(token: str) -> None:
 
 
 def _renewal_authenticator(path: Path) -> str | None:
+    """Read renewalparams while tolerating Certbot metadata before the first section."""
+
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    first_section = next(
+        (index for index, line in enumerate(lines) if line.lstrip().startswith("[")),
+        None,
+    )
+    if first_section is None:
+        raise configparser.MissingSectionHeaderError(str(path), 1, lines[0] if lines else "")
+
+    for line_number, line in enumerate(lines[:first_section], start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", ";")):
+            continue
+        if "=" not in line:
+            raise configparser.MissingSectionHeaderError(str(path), line_number, line)
+
     parser = configparser.ConfigParser()
-    parser.read(path, encoding="utf-8")
+    parser.read_string("\n".join(lines[first_section:]), source=str(path))
     if parser.has_option("renewalparams", "authenticator"):
         return parser.get("renewalparams", "authenticator")
     return None
