@@ -7,8 +7,10 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
+
+_RECORD_TYPES = {"A", "AAAA", "CNAME"}
 
 
 class PublicDNSProviderError(RuntimeError):
@@ -27,7 +29,7 @@ class DNSRecord:
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("DNS record name cannot be empty")
-        if self.type.upper() not in {"A", "AAAA", "CNAME"}:
+        if self.type.upper() not in _RECORD_TYPES:
             raise ValueError(f"unsupported public DNS record type: {self.type}")
         if not self.value.strip():
             raise ValueError("DNS record value cannot be empty")
@@ -64,10 +66,21 @@ class GoDaddyPublicDNSProvider:
         self.zone = zone.strip().lower().rstrip(".")
         if not self.zone or not key or not secret:
             raise ValueError("GoDaddy zone, key, and secret are required")
+        normalized_base = api_base.rstrip("/")
+        parsed_base = urlsplit(normalized_base)
+        if parsed_base.scheme != "https" or not parsed_base.netloc:
+            raise ValueError("GoDaddy API base must be an HTTPS URL")
         self.key = key
         self.secret = secret
-        self.api_base = api_base.rstrip("/")
+        self.api_base = normalized_base
         self.timeout = timeout
+
+    @staticmethod
+    def _record_type(value: str) -> str:
+        kind = value.upper()
+        if kind not in _RECORD_TYPES:
+            raise ValueError(f"unsupported public DNS record type: {value}")
+        return kind
 
     def _relative_name(self, fqdn: str) -> str:
         name = fqdn.strip().lower().rstrip(".")
@@ -80,9 +93,10 @@ class GoDaddyPublicDNSProvider:
 
     def _url(self, name: str, record_type: str) -> str:
         relative = self._relative_name(name)
+        kind = self._record_type(record_type)
         return (
             f"{self.api_base}/domains/{quote(self.zone, safe='')}/records/"
-            f"{quote(record_type.upper(), safe='')}/{quote(relative, safe='')}"
+            f"{quote(kind, safe='')}/{quote(relative, safe='')}"
         )
 
     def _request(
@@ -126,7 +140,7 @@ class GoDaddyPublicDNSProvider:
             for kind in ("A", "AAAA", "CNAME"):
                 result.extend(self.records(name, kind))
             return result
-        kind = record_type.upper()
+        kind = self._record_type(record_type)
         payload = self._request("GET", name, kind)
         if payload is None:
             return []
@@ -145,8 +159,13 @@ class GoDaddyPublicDNSProvider:
     def replace_records(
         self, name: str, record_type: str, records: Collection[DNSRecord]
     ) -> None:
-        kind = record_type.upper()
+        kind = self._record_type(record_type)
+        normalized_name = name.strip().lower().rstrip(".")
         values = list(records)
+        for item in values:
+            item_name = item.name.strip().lower().rstrip(".")
+            if item_name != normalized_name or item.type.upper() != kind:
+                raise ValueError("replacement DNS records must match destination name and type")
         if not values:
             self._request("DELETE", name, kind)
             return
