@@ -27,7 +27,6 @@ class NginxSiteSnapshot:
 
 def test(layout: NginxLayout | None = None) -> None:
     """Validate the active Nginx configuration."""
-
     layout = layout or discover_nginx()
     subprocess.run(
         [str(layout.executable), "-t", "-c", str(layout.nginx_conf)],
@@ -37,7 +36,6 @@ def test(layout: NginxLayout | None = None) -> None:
 
 def reload(layout: NginxLayout | None = None) -> None:
     """Reload Nginx after validating its active configuration."""
-
     layout = layout or discover_nginx()
     test(layout)
     _reload(layout)
@@ -45,7 +43,6 @@ def reload(layout: NginxLayout | None = None) -> None:
 
 def snapshot(site: Site, *, layout: NginxLayout | None = None) -> NginxSiteSnapshot:
     """Capture one site's generated and enabled entries before a larger transaction."""
-
     layout = layout or discover_nginx()
     target = layout.sites_available / _site_filename(site)
     enabled = layout.sites_enabled / target.name
@@ -63,7 +60,6 @@ def restore(
     layout: NginxLayout | None = None,
 ) -> None:
     """Restore a previously captured site snapshot and reload Nginx."""
-
     layout = layout or discover_nginx()
     _restore_file(state.target, state.available)
     _restore_entry(state.enabled, state.enabled_entry)
@@ -73,7 +69,6 @@ def restore(
 
 def expose(site: Site, *, layout: NginxLayout | None = None) -> Path:
     """Stage, validate, and atomically activate a generated site configuration."""
-
     layout = layout or discover_nginx()
     target = layout.sites_available / _site_filename(site)
     enabled = layout.sites_enabled / target.name
@@ -98,7 +93,6 @@ def expose(site: Site, *, layout: NginxLayout | None = None) -> Path:
 
 def enable(site: Site, *, layout: NginxLayout | None = None) -> Path:
     """Enable an already generated site and validate before reloading."""
-
     layout = layout or discover_nginx()
     target = layout.sites_available / _site_filename(site)
     if not target.is_file():
@@ -112,7 +106,6 @@ def enable(site: Site, *, layout: NginxLayout | None = None) -> Path:
 
 def disable(site: Site, *, layout: NginxLayout | None = None) -> Path:
     """Disable a site, validating the remaining configuration before reload."""
-
     layout = layout or discover_nginx()
     enabled = layout.sites_enabled / _site_filename(site)
     previous_enabled = _snapshot_entry(enabled)
@@ -124,7 +117,6 @@ def disable(site: Site, *, layout: NginxLayout | None = None) -> Path:
 
 def _activate(layout: NginxLayout, rollback: Callable[[], None]) -> None:
     """Validate and reload, restoring the previous state if either step fails."""
-
     try:
         test(layout)
         _reload(layout)
@@ -136,7 +128,6 @@ def _activate(layout: NginxLayout, rollback: Callable[[], None]) -> None:
 
 def _recover(layout: NginxLayout) -> None:
     """Best-effort reload of restored state without masking activation failure."""
-
     try:
         test(layout)
         _reload(layout)
@@ -146,7 +137,6 @@ def _recover(layout: NginxLayout) -> None:
 
 def _reload(layout: NginxLayout) -> None:
     """Signal Nginx to reload without performing a second validation."""
-
     subprocess.run([str(layout.executable), "-s", "reload"], check=True)
 
 
@@ -165,7 +155,7 @@ def _atomic_write(path: Path, content: str) -> None:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, target)
+        os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 
