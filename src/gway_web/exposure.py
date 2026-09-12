@@ -246,10 +246,15 @@ def check(
     if configured is None:
         results.append({"check": "managed", "ok": False, "detail": "FQDN is not managed"})
     else:
+        tls_result = _public_tls(target_fqdn, timeout) if configured.tls else None
         for item in site_check(configured.name, timeout=timeout):
-            results.append({"check": item["check"], **item})
-        if configured.tls:
-            results.append(_public_tls(target_fqdn, timeout) | {"check": "tls"})
+            observed = {"check": item["check"], **item}
+            if item["check"] == "certificate" and tls_result is not None:
+                observed["ok"] = bool(item.get("ok")) and bool(tls_result.get("ok"))
+                observed["live_tls"] = tls_result
+            results.append(observed)
+        if tls_result is not None:
+            results.append(tls_result | {"check": "tls"})
         results.append(_public_health(configured, timeout) | {"check": "public_health"})
     return {
         "fqdn": target_fqdn,
