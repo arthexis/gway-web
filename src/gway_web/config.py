@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib
 
 from .site import Site
 
