@@ -11,6 +11,7 @@ import os
 import re
 import socket
 import ssl
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -197,6 +198,26 @@ def _public_tls(
         }
 
 
+def _wait_public_tls(
+    fqdn: str,
+    timeout: float,
+    public_address: str | None = None,
+    *,
+    readiness_timeout: float = 5.0,
+    retry_interval: float = 0.25,
+) -> dict[str, object]:
+    """Wait briefly for a graceful Nginx reload to serve the new TLS vhost."""
+    deadline = time.monotonic() + max(0.0, readiness_timeout)
+    result = _public_tls(fqdn, timeout, public_address)
+    while not result.get("ok") and time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(retry_interval, remaining))
+        result = _public_tls(fqdn, min(timeout, max(0.1, remaining)), public_address)
+    return result
+
+
 def ensure(
     *,
     fqdn: str,
@@ -260,7 +281,7 @@ def ensure(
         nginx_expose(target)
         nginx_changed = True
         tls_result = (
-            _public_tls(target_fqdn, timeout, address) if target.tls else {"ok": True}
+            _wait_public_tls(target_fqdn, timeout, address) if target.tls else {"ok": True}
         )
         if not tls_result["ok"]:
             raise RuntimeError(f"public TLS check failed: {tls_result}")
