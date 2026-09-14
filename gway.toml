@@ -5,3 +5,8 @@ aliases = ["gway-web"]
 [adapter]
 type = "python"
 module = "gway_web.commands"
+
+[services.logs]
+description = "GWAY Web authenticated log service"
+command = ["{python}", "-m", "gway_web.log_service"]
+restart = "on-failure"
