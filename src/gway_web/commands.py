@@ -211,12 +211,13 @@ def stop(name: str) -> Path:
 
 
 def _public_check(target: Site, timeout: float) -> tuple[bool, str]:
+    url = f"{target.url}{target.health_path}"
     try:
-        with urlopen(Request(target.url, method="GET"), timeout=timeout) as response:
+        with urlopen(Request(url, method="GET"), timeout=timeout) as response:
             code = response.getcode()
-            return 200 <= code < 400, f"HTTP {code} {target.url}"
+            return 200 <= code < 400, f"HTTP {code} {url}"
     except HTTPError as exc:
-        return False, f"HTTP {exc.code} {target.url}"
+        return False, f"HTTP {exc.code} {url}"
     except (URLError, OSError) as exc:
         return False, str(exc)
 

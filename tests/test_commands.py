@@ -7,6 +7,7 @@ import pytest
 
 from gway_web import commands
 from gway_web.config import read_sites
+from gway_web.site import Site
 
 
 def test_gway_command_surface_is_compact():
@@ -85,3 +86,40 @@ def test_certificate_provider_aliases(tmp_path: Path, monkeypatch: pytest.Monkey
             cert_provider="manual",
             certificate_provider="certbot",
         )
+
+
+def test_public_check_uses_configured_health_path(monkeypatch: pytest.MonkeyPatch):
+    requested: dict[str, object] = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        @staticmethod
+        def getcode() -> int:
+            return 200
+
+    def fake_urlopen(request, *, timeout):
+        requested["url"] = request.full_url
+        requested["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(commands, "urlopen", fake_urlopen)
+    target = Site(
+        name="gateway",
+        domain="register.example.com",
+        health_path="/health",
+        tls=True,
+    )
+
+    ok, detail = commands._public_check(target, 3.0)
+
+    assert ok is True
+    assert detail == "HTTP 200 https://register.example.com/health"
+    assert requested == {
+        "url": "https://register.example.com/health",
+        "timeout": 3.0,
+    }
