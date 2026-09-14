@@ -4,8 +4,11 @@ import hashlib
 import json
 import os
 import secrets
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
 
 _TOKEN_STORE_ENV = "GWAY_WEB_TOKEN_STORE"
 _TOKEN_PREFIX = "gweb_v1"
@@ -13,10 +16,12 @@ _DEFAULT_TTL = 90 * 24 * 60 * 60
 
 
 def _now() -> datetime:
+    """Return the current UTC time."""
     return datetime.now(timezone.utc)
 
 
 def token_store_path() -> Path:
+    """Return the persistent bearer-token registry path."""
     configured = os.environ.get(_TOKEN_STORE_ENV)
     if configured:
         return Path(configured).expanduser()
@@ -26,7 +31,42 @@ def token_store_path() -> Path:
     return Path.home() / ".local" / "state" / "gway-web" / "tokens.json"
 
 
+@contextmanager
+def _store_lock(path: Path | None = None) -> Iterator[None]:
+    """Hold an interprocess advisory lock for one token-store transaction."""
+    target = path or token_store_path()
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target.parent.chmod(0o700)
+    lock_path = target.with_name(f"{target.name}.lock")
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        if os.name == "nt":
+            import msvcrt
+
+            os.write(descriptor, b"0") if os.fstat(descriptor).st_size == 0 else None
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
 def _read_store(path: Path | None = None) -> dict[str, dict[str, object]]:
+    """Read token records, treating a missing or malformed registry as empty."""
     target = path or token_store_path()
     if not target.exists():
         return {}
@@ -41,26 +81,37 @@ def _read_store(path: Path | None = None) -> dict[str, dict[str, object]]:
 
 
 def _write_store(records: dict[str, dict[str, object]], path: Path | None = None) -> None:
+    """Atomically replace the token registry through a private flushed file."""
     target = path or token_store_path()
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     target.parent.chmod(0o700)
-    data = json.dumps({"tokens": records}, indent=2, sort_keys=True) + "\n"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    descriptor = os.open(target, flags, 0o600)
+    data = (json.dumps({"tokens": records}, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    temporary = Path(temporary_name)
     try:
         os.fchmod(descriptor, 0o600)
-        os.write(descriptor, data.encode("utf-8"))
-    finally:
-        os.close(descriptor)
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        target.chmod(0o600)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _digest(token: str) -> str:
+    """Hash a bearer credential for at-rest comparison."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _parse_scopes(scopes: str | tuple[str, ...]) -> tuple[str, ...]:
+    """Normalize and validate token scopes."""
     values = scopes.split(",") if isinstance(scopes, str) else scopes
     cleaned = tuple(dict.fromkeys(value.strip() for value in values if value.strip()))
     if not cleaned:
@@ -77,6 +128,7 @@ def issue_token(
     scopes: str | tuple[str, ...] = "logs:read",
     ttl: int = _DEFAULT_TTL,
 ) -> dict[str, object]:
+    """Issue a scoped token and persist only its digest."""
     if ttl <= 0:
         raise ValueError("token ttl must be greater than zero")
     selected_scopes = _parse_scopes(scopes)
@@ -85,17 +137,18 @@ def issue_token(
     token = f"{_TOKEN_PREFIX}_{token_id}_{secret}"
     created = _now()
     expires = created + timedelta(seconds=ttl)
-    records = _read_store()
-    records[token_id] = {
-        "name": name or token_id,
-        "digest": _digest(token),
-        "scopes": list(selected_scopes),
-        "created_at": created.isoformat(),
-        "expires_at": expires.isoformat(),
-        "last_used_at": None,
-        "revoked_at": None,
-    }
-    _write_store(records)
+    with _store_lock():
+        records = _read_store()
+        records[token_id] = {
+            "name": name or token_id,
+            "digest": _digest(token),
+            "scopes": list(selected_scopes),
+            "created_at": created.isoformat(),
+            "expires_at": expires.isoformat(),
+            "last_used_at": None,
+            "revoked_at": None,
+        }
+        _write_store(records)
     return {
         "token_id": token_id,
         "name": name or token_id,
@@ -106,6 +159,7 @@ def issue_token(
 
 
 def list_tokens() -> list[dict[str, object]]:
+    """List token metadata without exposing secrets or digests."""
     records = _read_store()
     return [
         {"token_id": token_id, **{key: value for key, value in record.items() if key != "digest"}}
@@ -114,18 +168,22 @@ def list_tokens() -> list[dict[str, object]]:
 
 
 def revoke_token(token_id: str) -> dict[str, object]:
-    records = _read_store()
-    try:
-        record = records[token_id]
-    except KeyError as exc:
-        raise KeyError(f"unknown token: {token_id}") from exc
-    if record.get("revoked_at") is None:
-        record["revoked_at"] = _now().isoformat()
-        _write_store(records)
-    return {"token_id": token_id, "revoked_at": record.get("revoked_at")}
+    """Revoke a token under the registry transaction lock."""
+    with _store_lock():
+        records = _read_store()
+        try:
+            record = records[token_id]
+        except KeyError as exc:
+            raise KeyError(f"unknown token: {token_id}") from exc
+        if record.get("revoked_at") is None:
+            record["revoked_at"] = _now().isoformat()
+            _write_store(records)
+        revoked_at = record.get("revoked_at")
+    return {"token_id": token_id, "revoked_at": revoked_at}
 
 
 def verify_token(token: str, *, scope: str | None = None) -> bool:
+    """Verify a token and optional scope without mutating the registry."""
     parts = token.split("_", 3)
     if len(parts) != 4 or f"{parts[0]}_{parts[1]}" != _TOKEN_PREFIX:
         return False
@@ -146,8 +204,4 @@ def verify_token(token: str, *, scope: str | None = None) -> bool:
     except ValueError:
         return False
     scopes = record.get("scopes", [])
-    if scope is not None and (not isinstance(scopes, list) or scope not in scopes):
-        return False
-    record["last_used_at"] = _now().isoformat()
-    _write_store(records)
-    return True
+    return scope is None or (isinstance(scopes, list) and scope in scopes)
