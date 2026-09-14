@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import gway_web.log_service as log_service
+from gway_web import log_service
 
 
 def test_log_service_uses_loopback_defaults(monkeypatch) -> None:
