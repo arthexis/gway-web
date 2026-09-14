@@ -46,6 +46,18 @@ def _patch_nginx_transaction(monkeypatch):
 def _patch_live_success(monkeypatch) -> None:
     monkeypatch.setattr(
         exposure,
+        "_wait_public_dns",
+        lambda fqdn, address, timeout=300.0, retry_interval=2.0: {
+            "ok": True,
+            "fqdn": fqdn,
+            "expected": address,
+            "observed": [address],
+            "attempts": 1,
+            "elapsed_seconds": 0.0,
+        },
+    )
+    monkeypatch.setattr(
+        exposure,
         "_public_tls",
         lambda fqdn, timeout, public_address=None: {
             "ok": True,
@@ -53,6 +65,37 @@ def _patch_live_success(monkeypatch) -> None:
             "address": public_address,
         },
     )
+
+
+def test_wait_public_dns_retries_until_expected_address(monkeypatch) -> None:
+    observations = iter([(), ("203.0.113.10",)])
+    monkeypatch.setattr(exposure, "_public_dns_addresses", lambda fqdn: next(observations))
+    monkeypatch.setattr(exposure.time, "sleep", lambda seconds: None)
+
+    result = exposure._wait_public_dns(
+        "logs.example.com",
+        "203.0.113.10",
+        timeout=1.0,
+        retry_interval=0.01,
+    )
+
+    assert result["ok"] is True
+    assert result["attempts"] == 2
+    assert result["observed"] == ["203.0.113.10"]
+
+
+def test_wait_public_dns_times_out_when_expected_address_never_appears(monkeypatch) -> None:
+    monkeypatch.setattr(exposure, "_public_dns_addresses", lambda fqdn: ())
+
+    result = exposure._wait_public_dns(
+        "logs.example.com",
+        "203.0.113.10",
+        timeout=0.0,
+    )
+
+    assert result["ok"] is False
+    assert result["attempts"] == 1
+    assert result["observed"] == []
 
 
 def test_dependency_exposure_rejects_non_loopback_upstream() -> None:
@@ -152,6 +195,36 @@ def test_ensure_restores_dns_and_nginx_on_public_failure(monkeypatch) -> None:
     assert persisted == []
     assert provider.records("register.example.com", "A") == [original]
     assert restored == [state]
+
+
+def test_ensure_rolls_back_new_dns_record_when_propagation_times_out(monkeypatch) -> None:
+    provider = FakeProvider()
+    _patch_nginx_transaction(monkeypatch)
+    monkeypatch.setattr(exposure, "_provider", lambda *args, **kwargs: provider)
+    monkeypatch.setattr(
+        exposure,
+        "_wait_public_dns",
+        lambda fqdn, address, timeout=300.0, retry_interval=2.0: {
+            "ok": False,
+            "fqdn": fqdn,
+            "expected": address,
+            "observed": [],
+            "attempts": 3,
+            "elapsed_seconds": timeout,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="public DNS propagation timed out"):
+        exposure.ensure(
+            fqdn="logs.example.com",
+            upstream="http://127.0.0.1:8040",
+            dns_provider="godaddy",
+            dns_zone="example.com",
+            public_address="203.0.113.10",
+            dns_wait_timeout=12.0,
+        )
+
+    assert provider.records("logs.example.com", "A") == []
 
 
 def test_invalid_upstream_is_rejected_before_dns_mutation(monkeypatch) -> None:
