@@ -15,6 +15,7 @@ from .certbot import renew as certbot_renew
 from .config import read_sites, write_sites
 from .health import health as probe_health
 from .health import status as probe_reachability
+from .logs import serve_logs
 from .nginx import disable as nginx_disable
 from .nginx import expose as nginx_expose
 from .nginx import reload as nginx_reload
@@ -23,6 +24,7 @@ from .nginx.discovery import discover_nginx
 from .registry import clear as clear_registry
 from .site import Site
 from .tls import certificate_paths
+from .tokens import issue_token, list_tokens, revoke_token
 
 
 def _one_name(values: tuple[str, ...], *, required: bool = False) -> str | None:
@@ -208,6 +210,43 @@ def serve(
 def stop(name: str) -> Path:
     """Stop serving a site publicly without stopping its application process."""
     return nginx_disable(_configured_site(name))
+
+
+def token(
+    *token_id: str,
+    name: str | None = None,
+    scope: str = "logs:read",
+    ttl: int = 90 * 24 * 60 * 60,
+    list: bool = False,
+    revoke: bool = False,
+) -> dict[str, object] | list[dict[str, object]]:
+    """Issue, list, or revoke scoped GWAY Web bearer tokens."""
+    if len(token_id) > 1:
+        raise ValueError("expected at most one token id")
+    selected = token_id[0] if token_id else None
+    if list and revoke:
+        raise ValueError("--list and --revoke are mutually exclusive")
+    if list:
+        if selected is not None:
+            raise ValueError("token id cannot be combined with --list")
+        return list_tokens()
+    if revoke:
+        if selected is None:
+            raise ValueError("token id is required with --revoke")
+        return revoke_token(selected)
+    if selected is not None:
+        raise ValueError("token id is only valid with --revoke")
+    return issue_token(name=name, scopes=scope, ttl=ttl)
+
+
+def logs(
+    *,
+    source: str | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8040,
+) -> None:
+    """Serve authenticated access to GWAY execution logs."""
+    serve_logs(source=source, host=host, port=port)
 
 
 def _public_check(target: Site, timeout: float) -> tuple[bool, str]:

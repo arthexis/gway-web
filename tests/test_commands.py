@@ -17,7 +17,7 @@ def test_gway_command_surface_is_compact():
         if not name.startswith("_") and function.__module__ == commands.__name__
     }
 
-    assert public == {"certificate", "check", "reload", "serve", "site", "stop"}
+    assert public == {"certificate", "check", "logs", "reload", "serve", "site", "stop", "token"}
 
 
 def test_site_create_get_update_and_views(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
