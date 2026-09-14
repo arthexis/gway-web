@@ -297,13 +297,22 @@ def ensure(
     agree_tos: bool = True,
     timeout: float = 5.0,
     dns_wait_timeout: float = 300.0,
+    rollback: bool = True,
+    dns_rollback: bool = True,
 ) -> dict[str, object]:
-    """Idempotently expose one exact FQDN and persist only successful state."""
+    """Idempotently expose one exact FQDN and persist only successful state.
+
+    ``rollback`` is the global rollback gate. Specialized rollback controls, such
+    as ``dns_rollback``, can disable one rollback class while leaving the others
+    enabled, but they cannot re-enable rollback when the global gate is disabled.
+    """
     target_fqdn = _fqdn(fqdn)
     if not health_path.startswith("/"):
         raise ValueError("health_path must start with '/'")
     if dns_wait_timeout < 0:
         raise ValueError("dns_wait_timeout cannot be negative")
+
+    effective_dns_rollback = rollback and dns_rollback
 
     # Validate all local input and capture the pre-transaction Nginx state before
     # mutating any external provider state.
@@ -379,12 +388,12 @@ def ensure(
             "public": public,
         }
     except Exception:
-        if nginx_changed:
+        if rollback and nginx_changed:
             try:
                 nginx_restore(previous_nginx)
             except Exception:
                 pass
-        if provider is not None and previous_records is not None:
+        if effective_dns_rollback and provider is not None and previous_records is not None:
             try:
                 provider.replace_records(target_fqdn, "A", previous_records)
             except Exception:
