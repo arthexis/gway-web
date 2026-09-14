@@ -13,6 +13,7 @@ from .tokens import verify_token
 
 _LOG_DIR_ENV = "GWAY_LOG_DIR"
 _STREAM_CHUNK_SIZE = 64 * 1024
+_MAX_INGEST_BYTES = 8 * 1024 * 1024
 
 
 def default_log_root() -> Path:
@@ -54,6 +55,65 @@ def _event_path(run_id: str, source: str | Path | None = None) -> Path:
     return path
 
 
+def _validate_ingest(run_id: str, body: bytes) -> tuple[bytes, int]:
+    """Validate one NDJSON ingest batch and return normalized bytes plus event count."""
+    if not _safe_run_id(run_id):
+        raise ValueError("invalid run id")
+    if not body:
+        raise ValueError("empty ingest body")
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("ingest body must be utf-8") from exc
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("empty ingest body")
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError("invalid ndjson event") from exc
+        if not isinstance(event, dict):
+            raise ValueError("log event must be an object")
+        if event.get("run_id") != run_id:
+            raise ValueError("event run_id does not match route")
+    return ("\n".join(lines) + "\n").encode("utf-8"), len(lines)
+
+
+def append_run(run_id: str, body: bytes, source: str | Path | None = None) -> int:
+    """Validate and append an NDJSON batch to a contained run event file."""
+    data, count = _validate_ingest(run_id, body)
+    root = log_root(source).resolve()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
+    run = root / run_id
+    run.mkdir(parents=False, exist_ok=True, mode=0o700)
+    resolved_run = run.resolve()
+    try:
+        resolved_run.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("invalid run path") from exc
+    resolved_run.chmod(0o700)
+    path = resolved_run / "events.jsonl"
+    if path.exists():
+        try:
+            path.resolve(strict=True).relative_to(root)
+        except ValueError as exc:
+            raise ValueError("invalid event path") from exc
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        os.write(descriptor, data)
+    finally:
+        os.close(descriptor)
+    return count
+
+
 def list_runs(source: str | Path | None = None) -> list[dict[str, object]]:
     """List runs that contain an event stream under the selected log root."""
     root = log_root(source)
@@ -81,9 +141,9 @@ def read_run(run_id: str, source: str | Path | None = None) -> bytes:
 
 
 class LogRequestHandler(BaseHTTPRequestHandler):
-    """Serve health and authenticated log-read endpoints."""
+    """Serve authenticated log reads and ingestion."""
 
-    server_version = "GwayWebLogs/0.1"
+    server_version = "GwayWebLogs/0.2"
 
     def __init__(self, *args, source: Path, **kwargs):
         self.log_source = source
@@ -98,12 +158,12 @@ class LogRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _authorized(self) -> bool:
-        """Require a bearer credential carrying the log-read scope."""
+    def _authorized(self, scope: str) -> bool:
+        """Require a bearer credential carrying the requested scope."""
         header = self.headers.get("Authorization", "")
         if not header.startswith("Bearer "):
             return False
-        return verify_token(header[7:].strip(), scope="logs:read")
+        return verify_token(header[7:].strip(), scope=scope)
 
     def _stream_events(self, run_id: str) -> None:
         """Stream one run without allocating the complete event file."""
@@ -123,7 +183,7 @@ class LogRequestHandler(BaseHTTPRequestHandler):
         if path == "/health":
             self._json(HTTPStatus.OK, {"ok": True, "source": str(self.log_source)})
             return
-        if not self._authorized():
+        if not self._authorized("logs:read"):
             self._json(HTTPStatus.UNAUTHORIZED, {"error": "valid logs:read bearer token required"})
             return
         if path == "/api/logs/runs":
@@ -139,6 +199,44 @@ class LogRequestHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "run not found"})
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
+        """Append authenticated NDJSON events to one run."""
+        path = urlparse(self.path).path
+        prefix = "/api/logs/"
+        suffix = "/events"
+        if not (path.startswith(prefix) and path.endswith(suffix)):
+            self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+            return
+        if not self._authorized("logs:ingest"):
+            self._json(HTTPStatus.UNAUTHORIZED, {"error": "valid logs:ingest bearer token required"})
+            return
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/x-ndjson":
+            self._json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "application/x-ndjson required"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            self._json(HTTPStatus.LENGTH_REQUIRED, {"error": "content length required"})
+            return
+        if length <= 0:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "empty ingest body"})
+            return
+        if length > _MAX_INGEST_BYTES:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "ingest batch too large"})
+            return
+        run_id = unquote(path[len(prefix) : -len(suffix)]).strip("/")
+        body = self.rfile.read(length)
+        if len(body) != length:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "incomplete ingest body"})
+            return
+        try:
+            accepted = append_run(run_id, body, self.log_source)
+        except (ValueError, OSError) as exc:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        self._json(HTTPStatus.ACCEPTED, {"run_id": run_id, "accepted": accepted})
 
     def log_message(self, format: str, *args: object) -> None:
         """Suppress the stdlib access log; GWAY owns execution logging."""
