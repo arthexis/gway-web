@@ -218,6 +218,72 @@ def _wait_public_tls(
     return result
 
 
+def _public_dns_addresses(fqdn: str) -> tuple[str, ...]:
+    """Return addresses currently visible through the host's public resolver."""
+    try:
+        answers = socket.getaddrinfo(fqdn, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return ()
+
+    addresses: list[str] = []
+    for answer in answers:
+        raw = answer[4][0]
+        try:
+            normalized = str(ipaddress.ip_address(raw))
+        except ValueError:
+            continue
+        if normalized not in addresses:
+            addresses.append(normalized)
+    return tuple(addresses)
+
+
+def _wait_public_dns(
+    fqdn: str,
+    address: str,
+    *,
+    timeout: float = 300.0,
+    retry_interval: float = 2.0,
+) -> dict[str, object]:
+    """Wait until the expected address is publicly resolvable for one FQDN."""
+    if timeout < 0:
+        raise ValueError("dns_wait_timeout cannot be negative")
+    if retry_interval <= 0:
+        raise ValueError("DNS retry interval must be positive")
+
+    try:
+        expected = str(ipaddress.ip_address(address))
+    except ValueError as exc:
+        raise ValueError("public_address must be an IP address for DNS propagation checks") from exc
+
+    started = time.monotonic()
+    deadline = started + timeout
+    attempts = 0
+    observed: tuple[str, ...] = ()
+    while True:
+        attempts += 1
+        observed = _public_dns_addresses(fqdn)
+        if expected in observed:
+            return {
+                "ok": True,
+                "fqdn": fqdn,
+                "expected": expected,
+                "observed": list(observed),
+                "attempts": attempts,
+                "elapsed_seconds": time.monotonic() - started,
+            }
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {
+                "ok": False,
+                "fqdn": fqdn,
+                "expected": expected,
+                "observed": list(observed),
+                "attempts": attempts,
+                "elapsed_seconds": time.monotonic() - started,
+            }
+        time.sleep(min(retry_interval, remaining))
+
+
 def ensure(
     *,
     fqdn: str,
@@ -230,11 +296,14 @@ def ensure(
     email: str | None = None,
     agree_tos: bool = True,
     timeout: float = 5.0,
+    dns_wait_timeout: float = 300.0,
 ) -> dict[str, object]:
     """Idempotently expose one exact FQDN and persist only successful state."""
     target_fqdn = _fqdn(fqdn)
     if not health_path.startswith("/"):
         raise ValueError("health_path must start with '/'")
+    if dns_wait_timeout < 0:
+        raise ValueError("dns_wait_timeout cannot be negative")
 
     # Validate all local input and capture the pre-transaction Nginx state before
     # mutating any external provider state.
@@ -243,6 +312,7 @@ def ensure(
     previous_nginx = nginx_snapshot(bootstrap)
     previous_records: list[DNSRecord] | None = None
     address = public_address.strip() if public_address else None
+    dns_result: dict[str, object] | None = None
     nginx_changed = False
 
     try:
@@ -254,7 +324,16 @@ def ensure(
                         "public_address is required when the FQDN has no existing A record"
                     )
                 address = previous_records[0].value
+            address_was_present = any(item.value == address for item in previous_records)
             provider.ensure_record(DNSRecord(target_fqdn, "A", address))
+            if not address_was_present:
+                dns_result = _wait_public_dns(
+                    target_fqdn,
+                    address,
+                    timeout=dns_wait_timeout,
+                )
+                if not dns_result["ok"]:
+                    raise RuntimeError(f"public DNS propagation timed out: {dns_result}")
 
         if certbot:
             # HTTP first so HTTP-01 can work even when the previous/default HTTPS
@@ -295,6 +374,7 @@ def ensure(
             "upstream": upstream,
             "dns_provider": dns_provider,
             "public_address": address,
+            "dns": dns_result,
             "tls": tls_result,
             "public": public,
         }
