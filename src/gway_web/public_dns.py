@@ -177,7 +177,14 @@ class GoDaddyPublicDNSProvider:
         if any(item.value == record.value for item in current):
             return next(item for item in current if item.value == record.value)
         self.replace_records(record.name, record.type, [*current, record])
-        return record
+        confirmed = list(self.records(record.name, record.type))
+        for item in confirmed:
+            if item.value == record.value:
+                return item
+        raise PublicDNSProviderError(
+            f"GoDaddy DNS did not confirm {record.type.upper()} record "
+            f"{record.name!r} after update"
+        )
 
     def delete_record(self, record: DNSRecord) -> None:
         current = list(self.records(record.name, record.type))
