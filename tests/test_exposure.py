@@ -163,7 +163,7 @@ def test_ensure_uses_exact_fqdn_and_persists_only_after_public_health(monkeypatc
     assert result["success"] is True
     assert result["fqdn"] == "register.example.com"
     assert result["tls"]["ok"] is True
-    assert [item.domain for item in exposed] == ["register.example.com", "register.example.com"]
+    assert exposed == []
     assert persisted[0].domain == "register.example.com"
     assert persisted[0].host == "127.0.0.1"
     assert persisted[0].port == 8787
@@ -205,6 +205,7 @@ def test_ensure_restores_dns_and_nginx_on_public_failure(monkeypatch) -> None:
             dns_provider="godaddy",
             dns_zone="example.com",
             public_address="198.51.100.9",
+            rollback=True,
         )
 
     assert persisted == []
@@ -237,6 +238,7 @@ def test_ensure_rolls_back_new_dns_record_when_propagation_times_out(monkeypatch
             dns_zone="example.com",
             public_address="203.0.113.10",
             dns_wait_timeout=12.0,
+            rollback=True,
         )
 
     assert provider.records("logs.example.com", "A") == []
