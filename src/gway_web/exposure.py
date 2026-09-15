@@ -219,9 +219,9 @@ def _wait_public_tls(
     return result
 
 
-def _public_dns_addresses(fqdn: str) -> tuple[str, ...]:
-    """Return A records served consistently by the authoritative nameservers."""
-    return authoritative_addresses(fqdn)
+def _public_dns_addresses(fqdn: str, *, timeout: float = 2.0) -> tuple[str, ...]:
+    """Return authoritative A records within the supplied attempt budget."""
+    return authoritative_addresses(fqdn, timeout=timeout)
 
 
 def _wait_public_dns(
@@ -247,8 +247,12 @@ def _wait_public_dns(
     attempts = 0
     observed: tuple[str, ...] = ()
     while True:
+        remaining = max(0.0, deadline - time.monotonic())
         attempts += 1
-        observed = _public_dns_addresses(fqdn)
+        observed = _public_dns_addresses(
+            fqdn,
+            timeout=min(2.0, remaining),
+        )
         if expected in observed:
             return {
                 "ok": True,
