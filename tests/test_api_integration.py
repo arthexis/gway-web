@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
+import tempfile
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 
 from gway_web.api_config import read_api_config
 from gway_web.api_http import create_api_server
+from gway_web.tokens import issue_token
 
 
 @dataclass
@@ -130,20 +133,33 @@ class _Dispatcher:
 
 @contextmanager
 def _running_server(dispatcher: _Dispatcher, policy):
-    server = create_api_server(dispatcher, policy, host="127.0.0.1", port=0)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+    previous_store = os.environ.get("GWAY_WEB_TOKEN_STORE")
+    with tempfile.TemporaryDirectory() as directory:
+        os.environ["GWAY_WEB_TOKEN_STORE"] = os.path.join(directory, "tokens.json")
+        token = str(issue_token(scopes="repo:read")["token"])
+        server = create_api_server(dispatcher, policy, host="127.0.0.1", port=0)
+        server.test_token = token
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield server
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+            if previous_store is None:
+                os.environ.pop("GWAY_WEB_TOKEN_STORE", None)
+            else:
+                os.environ["GWAY_WEB_TOKEN_STORE"] = previous_store
 
 
 def _get(server, target: str, *, host: str = "repo.gway.test"):
     connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=2)
-    connection.request("GET", target, headers={"Host": host})
+    connection.request(
+        "GET",
+        target,
+        headers={"Host": host, "Authorization": f"Bearer {server.test_token}"},
+    )
     response = connection.getresponse()
     body = json.loads(response.read().decode("utf-8"))
     connection.close()
@@ -159,6 +175,7 @@ base_domain = "gway.test"
 
 [api.projects.repo]
 functions = ["context", "impact", "prs"]
+scope = "repo:read"
 """.strip(),
         encoding="utf-8",
     )

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import socket
+import tempfile
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -12,6 +14,7 @@ import pytest
 from gway_web.api_config import APIConfig, APIProjectExposure
 from gway_web.api_dispatch import APIArgumentError
 from gway_web.api_http import create_api_server
+from gway_web.tokens import issue_token
 
 
 @dataclass
@@ -52,6 +55,7 @@ def _policy() -> APIConfig:
             APIProjectExposure(
                 "repo",
                 frozenset({("impact",), ("context",)}),
+                "repo:read",
             ),
         ),
     )
@@ -63,21 +67,30 @@ def _running_server(
     *,
     max_response_bytes: int = 1024 * 1024,
 ):
-    server = create_api_server(
-        dispatcher,
-        _policy(),
-        host="127.0.0.1",
-        port=0,
-        max_response_bytes=max_response_bytes,
-    )
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+    previous_store = os.environ.get("GWAY_WEB_TOKEN_STORE")
+    with tempfile.TemporaryDirectory() as directory:
+        os.environ["GWAY_WEB_TOKEN_STORE"] = os.path.join(directory, "tokens.json")
+        token = str(issue_token(scopes="repo:read")["token"])
+        server = create_api_server(
+            dispatcher,
+            _policy(),
+            host="127.0.0.1",
+            port=0,
+            max_response_bytes=max_response_bytes,
+        )
+        server.test_token = token
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield server
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+            if previous_store is None:
+                os.environ.pop("GWAY_WEB_TOKEN_STORE", None)
+            else:
+                os.environ["GWAY_WEB_TOKEN_STORE"] = previous_store
 
 
 def _request(
@@ -92,7 +105,11 @@ def _request(
         server.server_address[1],
         timeout=2,
     )
-    connection.request(method, target, headers={"Host": host})
+    connection.request(
+        method,
+        target,
+        headers={"Host": host, "Authorization": f"Bearer {server.test_token}"},
+    )
     response = connection.getresponse()
     body = response.read()
     headers = dict(response.getheaders())
