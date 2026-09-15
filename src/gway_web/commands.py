@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from .api_config import APIConfig, APIProjectExposure, api_config_path, read_api_config, write_api_config
 from .certbot import DNSHooks, certificate_status
 from .certbot import obtain as certbot_obtain
 from .certbot import obtain_dns as certbot_obtain_dns
@@ -24,7 +26,7 @@ from .nginx.discovery import discover_nginx
 from .registry import clear as clear_registry
 from .site import Site
 from .tls import certificate_paths
-from .tokens import issue_token, list_tokens, revoke_token
+from .tokens import issue_token, list_tokens, provision_token, revoke_token
 
 
 def _one_name(values: tuple[str, ...], *, required: bool = False) -> str | None:
@@ -212,6 +214,60 @@ def stop(name: str) -> Path:
     return nginx_disable(_configured_site(name))
 
 
+def _api_payload(policy: APIConfig) -> dict[str, object]:
+    return {
+        "path": str(api_config_path()),
+        "base_domain": policy.base_domain,
+        "projects": [
+            {
+                "name": project.name,
+                "functions": ["/".join(path) for path in sorted(project.functions)],
+                "scope": project.scope,
+            }
+            for project in policy.projects
+        ],
+    }
+
+
+def api(
+    *,
+    base_domain: str | None = None,
+    project: str | None = None,
+    functions: str | None = None,
+    scope: str | None = None,
+) -> dict[str, object]:
+    """Inspect or idempotently configure one project in the GWAY Web API policy."""
+    policy = read_api_config()
+    if base_domain is None and project is None and functions is None and scope is None:
+        return _api_payload(policy)
+    if project is None and (functions is not None or scope is not None):
+        raise ValueError("--functions and --scope require --project")
+
+    projects = {item.name: item for item in policy.projects}
+    if project is not None:
+        key = project.strip().casefold()
+        existing = projects.get(key)
+        if functions is None:
+            selected_functions = existing.functions if existing is not None else frozenset()
+        else:
+            selected_functions = frozenset(
+                value.strip() for value in functions.split(",") if value.strip()
+            )
+        selected_scope = scope or (existing.scope if existing is not None else None)
+        projects[key] = APIProjectExposure(
+            name=key,
+            functions=selected_functions,
+            scope=selected_scope,
+        )
+
+    updated = APIConfig(
+        base_domain=base_domain or policy.base_domain,
+        projects=tuple(sorted(projects.values(), key=lambda item: item.name)),
+    )
+    write_api_config(updated)
+    return _api_payload(updated)
+
+
 def token(
     *token_id: str,
     name: str | None = None,
@@ -219,13 +275,15 @@ def token(
     ttl: int = 90 * 24 * 60 * 60,
     list: bool = False,
     revoke: bool = False,
+    provision_env: str | None = None,
 ) -> dict[str, object] | list[dict[str, object]]:
-    """Issue, list, or revoke scoped GWAY Web bearer tokens."""
+    """Issue, provision, list, or revoke scoped GWAY Web bearer tokens."""
     if len(token_id) > 1:
         raise ValueError("expected at most one token id")
     selected = token_id[0] if token_id else None
-    if list and revoke:
-        raise ValueError("--list and --revoke are mutually exclusive")
+    modes = sum(bool(value) for value in (list, revoke, provision_env))
+    if modes > 1:
+        raise ValueError("--list, --revoke, and --provision-env are mutually exclusive")
     if list:
         if selected is not None:
             raise ValueError("token id cannot be combined with --list")
@@ -234,6 +292,13 @@ def token(
         if selected is None:
             raise ValueError("token id is required with --revoke")
         return revoke_token(selected)
+    if provision_env:
+        if selected is not None:
+            raise ValueError("token id cannot be combined with --provision-env")
+        bearer = os.environ.get(provision_env, "")
+        if not bearer:
+            raise ValueError(f"token environment variable is empty: {provision_env}")
+        return provision_token(bearer, name=name, scopes=scope, ttl=ttl)
     if selected is not None:
         raise ValueError("token id is only valid with --revoke")
     return issue_token(name=name, scopes=scope, ttl=ttl)

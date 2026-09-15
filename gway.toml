@@ -10,3 +10,8 @@ module = "gway_web.commands"
 description = "GWAY Web authenticated log service"
 command = ["{python}", "-m", "gway_web.log_service"]
 restart = "on-failure"
+
+[services.api]
+description = "GWAY Web authenticated single-call API"
+command = ["{python}", "-m", "gway_web.api_service"]
+restart = "on-failure"

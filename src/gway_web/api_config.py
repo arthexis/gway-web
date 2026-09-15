@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,7 +14,17 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
     import tomli as tomllib
 
-from .config import config_path
+ENV_API_CONFIG = "GWAY_WEB_API_CONFIG"
+DEFAULT_API_CONFIG = Path("~/.config/gway/api.toml").expanduser()
+
+
+def api_config_path() -> Path:
+    """Return the dedicated API policy path.
+
+    API policy intentionally lives outside ``web.toml`` because the site writer
+    replaces its own manifest atomically and must never erase API exposure state.
+    """
+    return Path(os.environ.get(ENV_API_CONFIG, DEFAULT_API_CONFIG)).expanduser()
 
 
 def _project_key(name: str) -> str:
@@ -37,20 +50,30 @@ def _command_path(value: str | Sequence[str]) -> tuple[str, ...]:
     return tuple(part.strip().replace("_", "-").casefold() for part in parts)
 
 
+def _scope(value: str | None, project: str) -> str:
+    selected = value.strip() if isinstance(value, str) else f"{project}:read"
+    if not selected or ":" not in selected or any(character.isspace() for character in selected):
+        raise ValueError(f"invalid API token scope: {value!r}")
+    return selected
+
+
 @dataclass(frozen=True)
 class APIProjectExposure:
     """Explicit HTTP exposure for one canonical GWay project."""
 
     name: str
     functions: frozenset[tuple[str, ...]] = field(default_factory=frozenset)
+    scope: str | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _project_key(self.name))
+        name = _project_key(self.name)
+        object.__setattr__(self, "name", name)
         object.__setattr__(
             self,
             "functions",
             frozenset(_command_path(path) for path in self.functions),
         )
+        object.__setattr__(self, "scope", _scope(self.scope, name))
 
     def allows(self, command_path: str | Sequence[str]) -> bool:
         """Return whether one normalized command path is explicitly exposed."""
@@ -59,12 +82,7 @@ class APIProjectExposure:
 
 @dataclass(frozen=True)
 class APIConfig:
-    """Central API exposure policy.
-
-    Projects and commands are absent unless explicitly configured. Callers must
-    resolve project aliases through GWay first and query this policy with the
-    resulting canonical project name.
-    """
+    """Central API exposure and authentication policy."""
 
     base_domain: str | None = None
     projects: tuple[APIProjectExposure, ...] = ()
@@ -82,23 +100,27 @@ class APIConfig:
         object.__setattr__(self, "projects", normalized)
 
     def project_exposed(self, canonical_project: str) -> bool:
-        """Return whether a canonical project has an explicit API entry."""
         key = _project_key(canonical_project)
         return any(project.name == key for project in self.projects)
+
+    def project_scope(self, canonical_project: str) -> str | None:
+        key = _project_key(canonical_project)
+        for project in self.projects:
+            if project.name == key:
+                return project.scope
+        return None
 
     def command_exposed(
         self,
         canonical_project: str,
         command_path: str | Sequence[str],
     ) -> bool:
-        """Return whether a canonical project command is explicitly allowlisted."""
         key = _project_key(canonical_project)
         return any(
             project.name == key and project.allows(command_path) for project in self.projects
         )
 
     def exposed_commands(self, canonical_project: str) -> tuple[tuple[str, ...], ...]:
-        """Return sorted exposed command paths for one canonical project."""
         key = _project_key(canonical_project)
         for project in self.projects:
             if project.name == key:
@@ -107,8 +129,8 @@ class APIConfig:
 
 
 def read_api_config(path: str | Path | None = None) -> APIConfig:
-    """Read the central API exposure policy from the gway-web TOML config."""
-    target = Path(path).expanduser() if path is not None else config_path()
+    """Read the central API exposure policy."""
+    target = Path(path).expanduser() if path is not None else api_config_path()
     if not target.exists():
         if path is None:
             return APIConfig()
@@ -140,11 +162,50 @@ def read_api_config(path: str | Path | None = None) -> APIConfig:
             isinstance(value, str) and value.strip() for value in raw_functions
         ):
             raise TypeError(f"api project {name!r} functions must be an array of strings")
+        raw_scope = values.get("scope")
+        if raw_scope is not None and not isinstance(raw_scope, str):
+            raise TypeError(f"api project {name!r} scope must be a string")
         projects.append(
             APIProjectExposure(
                 name=name,
                 functions=frozenset(_command_path(value) for value in raw_functions),
+                scope=raw_scope,
             )
         )
 
     return APIConfig(base_domain=base_domain, projects=tuple(projects))
+
+
+def write_api_config(config: APIConfig, path: str | Path | None = None) -> Path:
+    """Atomically replace the dedicated API policy file."""
+    target = Path(path).expanduser() if path is not None else api_config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["[api]"]
+    if config.base_domain is not None:
+        lines.append(f"base_domain = {json.dumps(config.base_domain)}")
+    lines.append("")
+    for project in sorted(config.projects, key=lambda item: item.name):
+        lines.append(f"[api.projects.{json.dumps(project.name)}]")
+        functions = ["/".join(path) for path in sorted(project.functions)]
+        lines.append("functions = [" + ", ".join(json.dumps(value) for value in functions) + "]")
+        lines.append(f"scope = {json.dumps(project.scope)}")
+        lines.append("")
+
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write("\n".join(lines))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        target.chmod(0o600)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
+        raise
+    return target

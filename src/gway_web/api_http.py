@@ -1,4 +1,4 @@
-"""HTTP transport for the single-call GWay API."""
+"""HTTP transport for the authenticated single-call GWay API."""
 
 from __future__ import annotations
 
@@ -13,9 +13,11 @@ from .api_dispatch import (
     APIArgumentError,
     APINotFoundError,
     DispatcherLike,
+    canonical_project_name,
     dispatch_api_request,
 )
 from .api_routing import APITranslationError, project_from_host, translate_request
+from .tokens import verify_token
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024
@@ -24,7 +26,7 @@ _MAX_ERROR_MESSAGE_BYTES = 128
 
 
 class _ResponseTooLargeError(ValueError):
-    """Raised when bounded JSON encoding exceeds the configured response limit."""
+    pass
 
 
 def _encode_json(payload: object) -> bytes:
@@ -37,7 +39,6 @@ def _encode_json(payload: object) -> bytes:
 
 
 def _encode_json_bounded(payload: object, max_bytes: int) -> bytes:
-    """Encode JSON incrementally and stop once the byte budget is exceeded."""
     encoder = json.JSONEncoder(
         ensure_ascii=False,
         allow_nan=False,
@@ -63,15 +64,12 @@ def _bounded_message(value: object) -> str:
 def _error_payload(error_type: str, message: str) -> dict[str, object]:
     return {
         "ok": False,
-        "error": {
-            "type": error_type,
-            "message": message,
-        },
+        "error": {"type": error_type, "message": message},
     }
 
 
 class GWayAPIRequestHandler(BaseHTTPRequestHandler):
-    """Serve one exposed GWay callable per HTTP request."""
+    """Serve one bearer-authenticated GWay callable per HTTP request."""
 
     dispatcher: DispatcherLike
     policy: APIConfig
@@ -136,13 +134,42 @@ class GWayAPIRequestHandler(BaseHTTPRequestHandler):
             extra_headers={"Allow": "GET"},
         )
 
-    def _discovery(self, target) -> object:
-        if target.query:
-            raise APITranslationError("/_gway does not accept query parameters")
-        project_token = project_from_host(
+    def _project_token(self) -> str:
+        return project_from_host(
             self.headers.get("Host", ""),
             self.policy.base_domain or "",
         )
+
+    def _authorize(self, project_token: str) -> bool:
+        canonical = canonical_project_name(self.dispatcher, project_token)
+        if not self.policy.project_exposed(canonical):
+            raise APINotFoundError("API route is not exposed")
+        scope = self.policy.project_scope(canonical)
+        if scope is None:
+            raise APINotFoundError("API route is not exposed")
+
+        authorization = self.headers.get("Authorization", "")
+        scheme, separator, credential = authorization.partition(" ")
+        valid_shape = (
+            bool(separator)
+            and scheme.casefold() == "bearer"
+            and bool(credential)
+            and credential.strip() == credential
+            and not any(character.isspace() for character in credential)
+        )
+        if not valid_shape or not verify_token(credential, scope=scope):
+            self._write_error(
+                401,
+                "unauthorized",
+                "valid bearer token required",
+                extra_headers={"WWW-Authenticate": "Bearer"},
+            )
+            return False
+        return True
+
+    def _discovery(self, target, project_token: str) -> object:
+        if target.query:
+            raise APITranslationError("/_gway does not accept query parameters")
         return discover_project(
             self.dispatcher,  # type: ignore[arg-type]
             self.policy,
@@ -156,9 +183,16 @@ class GWayAPIRequestHandler(BaseHTTPRequestHandler):
             self._write_error(400, "invalid_request", "invalid request target")
             return
 
+        if target.path == "/health":
+            self._write_result({"service": "gway-web-api", "status": "ok"})
+            return
+
         try:
+            project_token = self._project_token()
+            if not self._authorize(project_token):
+                return
             if target.path == "/_gway":
-                result = self._discovery(target)
+                result = self._discovery(target, project_token)
             else:
                 request = translate_request(
                     host=self.headers.get("Host", ""),
@@ -213,10 +247,9 @@ def create_api_server(
     policy: APIConfig,
     *,
     host: str = "127.0.0.1",
-    port: int = 8000,
+    port: int = 8050,
     max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
 ) -> ThreadingHTTPServer:
-    """Create a configured HTTP server without starting its serving loop."""
     if policy.base_domain is None:
         raise ValueError("API base_domain must be configured before starting the server")
     if not isinstance(max_response_bytes, int) or max_response_bytes < _MIN_MAX_RESPONSE_BYTES:
@@ -238,10 +271,9 @@ def serve_api(
     policy: APIConfig,
     *,
     host: str = "127.0.0.1",
-    port: int = 8000,
+    port: int = 8050,
     max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
 ) -> None:
-    """Serve the single-call GWay API until interrupted."""
     server = create_api_server(
         dispatcher,
         policy,
