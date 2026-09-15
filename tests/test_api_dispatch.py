@@ -5,7 +5,12 @@ from dataclasses import dataclass
 import pytest
 
 from gway_web.api_config import APIConfig, APIProjectExposure
-from gway_web.api_dispatch import APINotFoundError, canonical_project_name, dispatch_api_request
+from gway_web.api_dispatch import (
+    APIArgumentError,
+    APINotFoundError,
+    canonical_project_name,
+    dispatch_api_request,
+)
 from gway_web.api_routing import APIRequest
 
 
@@ -42,6 +47,10 @@ class _Dispatcher:
         if self.error is not None:
             raise self.error
         return self.result
+
+
+class _CoreArgumentError(ValueError):
+    transport_safe_argument_error = True
 
 
 def _policy(*functions: tuple[str, ...], project: str = "repo") -> APIConfig:
@@ -126,12 +135,24 @@ def test_dispatch_preserves_literal_argument_values() -> None:
     ]
 
 
-def test_invocation_errors_propagate_for_transport_mapping() -> None:
+def test_transport_safe_core_argument_error_maps_to_api_argument_error() -> None:
     dispatcher = _Dispatcher({"repo": _Project("repo")})
-    dispatcher.error = ValueError("missing required arguments: issue")
-    request = APIRequest("repo", ("impact",), {})
+    dispatcher.error = _CoreArgumentError("invalid int value for issue")
+    request = APIRequest("repo", ("impact",), {"issue": "not-an-int"})
 
-    with pytest.raises(ValueError, match="missing required arguments: issue"):
+    with pytest.raises(APIArgumentError, match="invalid int value for issue"):
         dispatch_api_request(dispatcher, _policy(("impact",)), request)
 
+    assert dispatcher.calls == [("repo", ("impact",), {"issue": "not-an-int"})]
+
+
+def test_unclassified_value_error_propagates_without_transport_mapping() -> None:
+    dispatcher = _Dispatcher({"repo": _Project("repo")})
+    dispatcher.error = ValueError("private application detail")
+    request = APIRequest("repo", ("impact",), {})
+
+    with pytest.raises(ValueError, match="private application detail") as exc_info:
+        dispatch_api_request(dispatcher, _policy(("impact",)), request)
+
+    assert type(exc_info.value) is ValueError
     assert dispatcher.calls == [("repo", ("impact",), {})]

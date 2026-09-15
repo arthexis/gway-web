@@ -8,6 +8,7 @@ from .api_config import APIConfig
 from .api_routing import APIRequest
 
 _NOT_FOUND_MESSAGE = "API route is not exposed"
+_SAFE_ARGUMENT_MARKER = "transport_safe_argument_error"
 
 
 class APINotFoundError(LookupError):
@@ -52,6 +53,11 @@ def canonical_project_name(dispatcher: DispatcherLike, project_token: str) -> st
     return name
 
 
+def _transport_safe_argument_error(error: BaseException) -> bool:
+    """Recognize only errors explicitly classified safe by the GWay invocation boundary."""
+    return getattr(type(error), _SAFE_ARGUMENT_MARKER, False) is True
+
+
 def dispatch_api_request(
     dispatcher: DispatcherLike,
     policy: APIConfig,
@@ -59,16 +65,25 @@ def dispatch_api_request(
 ) -> object:
     """Authorize and invoke exactly one translated request through GWay.
 
-    Dispatcher implementations may raise ``APIArgumentError`` only for
-    validation failures whose messages are explicitly safe to return to an
-    untrusted transport client. Other callable exceptions must propagate.
+    GWay's programmatic invocation boundary marks only argument binding and
+    conversion failures as transport-safe. Those are translated into the local
+    ``APIArgumentError`` contract so the HTTP layer may return a bounded 400.
+    All other exceptions, including ordinary ``ValueError`` from application
+    callables, propagate without exposing their messages to clients.
     """
     canonical_project = canonical_project_name(dispatcher, request.project)
     if not policy.command_exposed(canonical_project, request.command_path):
         raise APINotFoundError(_NOT_FOUND_MESSAGE)
 
-    return dispatcher.invoke(
-        request.project,
-        request.command_path,
-        dict(request.arguments),
-    )
+    try:
+        return dispatcher.invoke(
+            request.project,
+            request.command_path,
+            dict(request.arguments),
+        )
+    except APIArgumentError:
+        raise
+    except Exception as exc:
+        if _transport_safe_argument_error(exc):
+            raise APIArgumentError(str(exc)) from exc
+        raise
