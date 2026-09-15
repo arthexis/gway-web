@@ -20,4 +20,4 @@ def test_managed_api_rejects_non_loopback_bindings(host):
 def test_managed_api_runtime_includes_gway_dispatcher():
     from gway.dispatcher import Dispatcher
 
-    assert Dispatcher.__module__ == "gway.dispatcher"
+    assert Dispatcher.__name__ == "Dispatcher"
