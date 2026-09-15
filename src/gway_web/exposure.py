@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from .certbot import certificate_status, obtain as certbot_obtain, renew as certbot_renew
 from .commands import check as site_check
 from .config import read_sites, write_sites
+from .dns_readiness import authoritative_addresses, flush_local_cache
 from .nginx import disable as nginx_disable
 from .nginx import expose as nginx_expose
 from .nginx import restore as nginx_restore
@@ -219,22 +220,8 @@ def _wait_public_tls(
 
 
 def _public_dns_addresses(fqdn: str) -> tuple[str, ...]:
-    """Return addresses currently visible through the host's public resolver."""
-    try:
-        answers = socket.getaddrinfo(fqdn, None, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        return ()
-
-    addresses: list[str] = []
-    for answer in answers:
-        raw = answer[4][0]
-        try:
-            normalized = str(ipaddress.ip_address(raw))
-        except ValueError:
-            continue
-        if normalized not in addresses:
-            addresses.append(normalized)
-    return tuple(addresses)
+    """Return A records served consistently by the authoritative nameservers."""
+    return authoritative_addresses(fqdn)
 
 
 def _wait_public_dns(
@@ -244,7 +231,7 @@ def _wait_public_dns(
     timeout: float = 300.0,
     retry_interval: float = 2.0,
 ) -> dict[str, object]:
-    """Wait until the expected address is publicly resolvable for one FQDN."""
+    """Wait until every authority serves the expected address for one FQDN."""
     if timeout < 0:
         raise ValueError("dns_wait_timeout cannot be negative")
     if retry_interval <= 0:
@@ -336,11 +323,13 @@ def ensure(
             address_was_present = any(item.value == address for item in previous_records)
             provider.ensure_record(DNSRecord(target_fqdn, "A", address))
             if not address_was_present:
+                local_cache_flushed = flush_local_cache()
                 dns_result = _wait_public_dns(
                     target_fqdn,
                     address,
                     timeout=dns_wait_timeout,
                 )
+                dns_result["local_cache_flushed"] = local_cache_flushed
                 if not dns_result["ok"]:
                     raise RuntimeError(f"public DNS propagation timed out: {dns_result}")
 
