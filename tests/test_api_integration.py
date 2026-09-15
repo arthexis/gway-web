@@ -17,7 +17,7 @@ class _Project:
 
 class _Registry:
     def require(self, token: str) -> _Project:
-        if token.casefold() in {"repo", "r"}:
+        if token.casefold() in {"repo", "gway-repo"}:
             return _Project("repo")
         raise ValueError("unknown project")
 
@@ -41,7 +41,13 @@ class _Command:
     parameters: tuple[_Parameter, ...] = ()
 
 
+class _CoreArgumentError(ValueError):
+    transport_safe_argument_error = True
+
+
 class _Dispatcher:
+    """Fixture matching the public signatures of gway-repo's first API commands."""
+
     def __init__(self) -> None:
         self.registry = _Registry()
         self.calls: list[tuple[str, tuple[str, ...], dict[str, str]]] = []
@@ -50,15 +56,46 @@ class _Dispatcher:
         assert project_name == "repo"
         return (
             _Command(
-                ("impact",),
-                summary="Analyze issue impact",
+                ("context",),
+                summary="Return one bounded context envelope for a pull request or issue.",
                 parameters=(
-                    _Parameter("issue", required=True, positional=True, annotation=int),
+                    _Parameter("pr", annotation=int),
+                    _Parameter("issue", annotation=int),
+                    _Parameter("include_impact", annotation=bool, default=True),
+                ),
+            ),
+            _Command(
+                ("impact",),
+                summary="Return bounded code impact for one PR, issue, or local file.",
+                parameters=(
+                    _Parameter("pr", annotation=int),
+                    _Parameter("issue", annotation=int),
+                    _Parameter("file", annotation=str),
                     _Parameter("depth", annotation=int, default=2),
                 ),
             ),
-            _Command(("secret",), summary="Hidden command"),
+            _Command(
+                ("prs",),
+                summary="Return pull requests connected to an issue.",
+                parameters=(
+                    _Parameter("issue", required=True, positional=True, annotation=int),
+                    _Parameter("limit", annotation=int, default=20),
+                ),
+            ),
+            _Command(("reviews",), summary="Hidden repository command"),
         )
+
+    @staticmethod
+    def _integer(values: dict[str, str], name: str, *, required: bool = False) -> int | None:
+        value = values.get(name)
+        if value is None:
+            if required:
+                raise _CoreArgumentError(f"missing required arguments: {name}")
+            return None
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise _CoreArgumentError(f"invalid integer argument: {name}") from exc
 
     def invoke(
         self,
@@ -68,13 +105,27 @@ class _Dispatcher:
     ) -> object:
         values = dict(arguments or {})
         self.calls.append((project_name, command_path, values))
-        if command_path != ("impact",):
-            raise ValueError("unknown command")
-        return {
-            "issue": int(values["issue"]),
-            "depth": int(values.get("depth", "2")),
-            "requested_as": project_name,
-        }
+
+        if command_path == ("context",):
+            return {
+                "kind": "context",
+                "issue": self._integer(values, "issue"),
+                "requested_as": project_name,
+            }
+        if command_path == ("impact",):
+            return {
+                "kind": "impact",
+                "issue": self._integer(values, "issue"),
+                "depth": self._integer(values, "depth") or 2,
+                "requested_as": project_name,
+            }
+        if command_path == ("prs",):
+            return {
+                "kind": "prs",
+                "issue": self._integer(values, "issue", required=True),
+                "requested_as": project_name,
+            }
+        raise ValueError("unexpected command dispatch")
 
 
 @contextmanager
@@ -99,7 +150,7 @@ def _get(server, target: str, *, host: str = "repo.gway.test"):
     return response.status, body
 
 
-def test_config_to_http_to_dispatch_and_discovery_end_to_end(tmp_path) -> None:
+def test_repository_api_profile_routes_only_first_three_commands(tmp_path) -> None:
     config = tmp_path / "web.toml"
     config.write_text(
         """
@@ -107,7 +158,7 @@ def test_config_to_http_to_dispatch_and_discovery_end_to_end(tmp_path) -> None:
 base_domain = "gway.test"
 
 [api.projects.repo]
-functions = ["impact"]
+functions = ["context", "impact", "prs"]
 """.strip(),
         encoding="utf-8",
     )
@@ -115,28 +166,61 @@ functions = ["impact"]
     dispatcher = _Dispatcher()
 
     with _running_server(dispatcher, policy) as server:
-        status, body = _get(
+        context_status, context = _get(server, "/context?issue=1")
+        impact_status, impact = _get(server, "/impact?issue=1&depth=3")
+        prs_status, prs = _get(
             server,
-            "/impact?issue=917&depth=3",
-            host="r.gway.test",
+            "/prs?issue=1",
+            host="gway-repo.gway.test",
         )
-        discovery_status, discovery = _get(server, "/_gway", host="r.gway.test")
-        hidden_status, hidden = _get(server, "/secret", host="repo.gway.test")
+        discovery_status, discovery = _get(
+            server,
+            "/_gway",
+            host="gway-repo.gway.test",
+        )
+        hidden_status, hidden = _get(server, "/reviews?number=1")
+        invalid_status, invalid = _get(server, "/prs?issue=not-an-int")
 
-    assert status == 200
-    assert body == {
+    assert context_status == 200
+    assert context == {
         "ok": True,
-        "result": {"issue": 917, "depth": 3, "requested_as": "r"},
+        "result": {"kind": "context", "issue": 1, "requested_as": "repo"},
     }
-    assert dispatcher.calls == [("r", ("impact",), {"issue": "917", "depth": "3"})]
+    assert impact_status == 200
+    assert impact == {
+        "ok": True,
+        "result": {"kind": "impact", "issue": 1, "depth": 3, "requested_as": "repo"},
+    }
+    assert prs_status == 200
+    assert prs == {
+        "ok": True,
+        "result": {"kind": "prs", "issue": 1, "requested_as": "gway-repo"},
+    }
 
     assert discovery_status == 200
     assert discovery["ok"] is True
     assert discovery["result"]["project"] == "repo"
-    assert [command["path"] for command in discovery["result"]["commands"]] == [["impact"]]
+    assert [command["path"] for command in discovery["result"]["commands"]] == [
+        ["context"],
+        ["impact"],
+        ["prs"],
+    ]
 
     assert hidden_status == 404
     assert hidden == {
         "ok": False,
         "error": {"type": "not_found", "message": "API route is not exposed"},
     }
+
+    assert invalid_status == 400
+    assert invalid == {
+        "ok": False,
+        "error": {"type": "invalid_arguments", "message": "invalid integer argument: issue"},
+    }
+
+    assert dispatcher.calls == [
+        ("repo", ("context",), {"issue": "1"}),
+        ("repo", ("impact",), {"issue": "1", "depth": "3"}),
+        ("gway-repo", ("prs",), {"issue": "1"}),
+        ("repo", ("prs",), {"issue": "not-an-int"}),
+    ]
