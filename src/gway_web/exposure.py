@@ -249,10 +249,7 @@ def _wait_public_dns(
     while True:
         remaining = max(0.0, deadline - time.monotonic())
         attempts += 1
-        observed = _public_dns_addresses(
-            fqdn,
-            timeout=min(2.0, remaining),
-        )
+        observed = _public_dns_addresses(fqdn, timeout=min(2.0, remaining))
         if expected in observed:
             return {
                 "ok": True,
@@ -288,14 +285,15 @@ def ensure(
     agree_tos: bool = True,
     timeout: float = 5.0,
     dns_wait_timeout: float = 300.0,
-    rollback: bool = True,
-    dns_rollback: bool = True,
+    rollback: bool = False,
+    dns_rollback: bool = False,
 ) -> dict[str, object]:
-    """Idempotently expose one exact FQDN and persist only successful state.
+    """Idempotently expose one exact FQDN without destructive rollback by default.
 
-    ``rollback`` is the global rollback gate. Specialized rollback controls, such
-    as ``dns_rollback``, can disable one rollback class while leaving the others
-    enabled, but they cannot re-enable rollback when the global gate is disabled.
+    Existing managed certificate material is reused in place. The HTTP-only ACME
+    bootstrap is installed only when certificate material is actually missing.
+    Rollback is opt-in because restoring old Nginx or DNS state can disrupt other
+    healthy virtual hosts on a persistent gateway.
     """
     target_fqdn = _fqdn(fqdn)
     if not health_path.startswith("/"):
@@ -304,12 +302,9 @@ def ensure(
         raise ValueError("dns_wait_timeout cannot be negative")
 
     effective_dns_rollback = rollback and dns_rollback
-
-    # Validate all local input and capture the pre-transaction Nginx state before
-    # mutating any external provider state.
     bootstrap = _site_for(target_fqdn, upstream, health_path, tls=False)
     provider = _provider(dns_provider, dns_zone)
-    previous_nginx = nginx_snapshot(bootstrap)
+    previous_nginx = nginx_snapshot(bootstrap) if rollback else None
     previous_records: list[DNSRecord] | None = None
     address = public_address.strip() if public_address else None
     dns_result: dict[str, object] | None = None
@@ -338,29 +333,57 @@ def ensure(
                     raise RuntimeError(f"public DNS propagation timed out: {dns_result}")
 
         if certbot:
-            # HTTP first so HTTP-01 can work even when the previous/default HTTPS
-            # certificate is expired or belongs to another virtual host.
-            nginx_expose(bootstrap)
-            nginx_changed = True
             status = certificate_status(target_fqdn)
             if status.state == "managed":
-                status = certbot_renew(target_fqdn, deploy_hook=None)
+                if not status.ready:
+                    raise RuntimeError(f"certificate is not ready for {target_fqdn}")
+                target = _site_for(target_fqdn, upstream, health_path, tls=True)
+
+                # A repeated deployment must not tear down a working TLS vhost.
+                # If the live endpoint is already healthy, persist the requested
+                # upstream declaration and return without touching Nginx or Certbot.
+                tls_result = _public_tls(target_fqdn, timeout, address)
+                public = _public_health(target, timeout, address) if tls_result["ok"] else None
+                if tls_result["ok"] and public is not None and public["ok"]:
+                    _persist(target)
+                    return {
+                        "success": True,
+                        "fqdn": target_fqdn,
+                        "upstream": upstream,
+                        "dns_provider": dns_provider,
+                        "public_address": address,
+                        "dns": dns_result,
+                        "tls": tls_result,
+                        "public": public,
+                        "changed": False,
+                    }
+
+                # Certificate material is already valid and owned by this FQDN.
+                # Repair only the TLS vhost; never replace it with HTTP first.
+                nginx_expose(target)
+                nginx_changed = True
             elif status.state == "missing":
                 if not email:
                     raise ValueError("certificate issuance requires an email address")
+                # HTTP bootstrap is necessary only for a genuinely new HTTP-01
+                # certificate. Existing TLS exposure is never torn down for renewal.
+                nginx_expose(bootstrap)
+                nginx_changed = True
                 status = certbot_obtain(bootstrap, email=email, agree_tos=agree_tos)
+                if not status.ready:
+                    raise RuntimeError(f"certificate is not ready for {target_fqdn}")
+                target = _site_for(target_fqdn, upstream, health_path, tls=True)
+                nginx_expose(target)
+                nginx_changed = True
             else:
                 raise RuntimeError(
                     f"refusing certificate mutation in {status.state!r} state for {target_fqdn}"
                 )
-            if not status.ready:
-                raise RuntimeError(f"certificate is not ready for {target_fqdn}")
-            target = _site_for(target_fqdn, upstream, health_path, tls=True)
         else:
             target = bootstrap
+            nginx_expose(target)
+            nginx_changed = True
 
-        nginx_expose(target)
-        nginx_changed = True
         tls_result = (
             _wait_public_tls(target_fqdn, timeout, address) if target.tls else {"ok": True}
         )
@@ -379,9 +402,10 @@ def ensure(
             "dns": dns_result,
             "tls": tls_result,
             "public": public,
+            "changed": nginx_changed,
         }
     except Exception:
-        if rollback and nginx_changed:
+        if rollback and nginx_changed and previous_nginx is not None:
             try:
                 nginx_restore(previous_nginx)
             except Exception:
@@ -419,9 +443,7 @@ def check(
     if configured is None:
         results.append({"check": "managed", "ok": False, "detail": "FQDN is not managed"})
     else:
-        tls_result = (
-            _public_tls(target_fqdn, timeout, address) if configured.tls else None
-        )
+        tls_result = _public_tls(target_fqdn, timeout, address) if configured.tls else None
         for item in site_check(configured.name, timeout=timeout):
             observed = {"check": item["check"], **item}
             if item["check"] == "certificate" and tls_result is not None:
