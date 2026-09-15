@@ -8,8 +8,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from .api_config import APIConfig
+from .api_discovery import discover_project
 from .api_dispatch import APINotFoundError, DispatcherLike, dispatch_api_request
-from .api_routing import APITranslationError, translate_request
+from .api_routing import APITranslationError, project_from_host, translate_request
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024
@@ -107,16 +108,32 @@ class GWayAPIRequestHandler(BaseHTTPRequestHandler):
             extra_headers={"Allow": "GET"},
         )
 
+    def _discovery(self, target) -> object:
+        if target.query:
+            raise APITranslationError("/_gway does not accept query parameters")
+        project_token = project_from_host(
+            self.headers.get("Host", ""),
+            self.policy.base_domain or "",
+        )
+        return discover_project(
+            self.dispatcher,  # type: ignore[arg-type]
+            self.policy,
+            project_token,
+        )
+
     def do_GET(self) -> None:  # noqa: N802
         target = urlsplit(self.path)
         try:
-            request = translate_request(
-                host=self.headers.get("Host", ""),
-                path=target.path,
-                query=target.query,
-                base_domain=self.policy.base_domain or "",
-            )
-            result = dispatch_api_request(self.dispatcher, self.policy, request)
+            if target.path == "/_gway":
+                result = self._discovery(target)
+            else:
+                request = translate_request(
+                    host=self.headers.get("Host", ""),
+                    path=target.path,
+                    query=target.query,
+                    base_domain=self.policy.base_domain or "",
+                )
+                result = dispatch_api_request(self.dispatcher, self.policy, request)
         except APINotFoundError:
             self._write_error(404, "not_found", "API route is not exposed")
             return
