@@ -69,7 +69,13 @@ def _patch_live_success(monkeypatch) -> None:
 
 def test_wait_public_dns_retries_until_expected_address(monkeypatch) -> None:
     observations = iter([(), ("203.0.113.10",)])
-    monkeypatch.setattr(exposure, "_public_dns_addresses", lambda fqdn: next(observations))
+    budgets: list[float] = []
+
+    def public_dns_addresses(fqdn: str, *, timeout: float) -> tuple[str, ...]:
+        budgets.append(timeout)
+        return next(observations)
+
+    monkeypatch.setattr(exposure, "_public_dns_addresses", public_dns_addresses)
     monkeypatch.setattr(exposure.time, "sleep", lambda seconds: None)
 
     result = exposure._wait_public_dns(
@@ -82,10 +88,18 @@ def test_wait_public_dns_retries_until_expected_address(monkeypatch) -> None:
     assert result["ok"] is True
     assert result["attempts"] == 2
     assert result["observed"] == ["203.0.113.10"]
+    assert len(budgets) == 2
+    assert all(0.0 <= budget <= 1.0 for budget in budgets)
 
 
 def test_wait_public_dns_times_out_when_expected_address_never_appears(monkeypatch) -> None:
-    monkeypatch.setattr(exposure, "_public_dns_addresses", lambda fqdn: ())
+    budgets: list[float] = []
+
+    def public_dns_addresses(fqdn: str, *, timeout: float) -> tuple[str, ...]:
+        budgets.append(timeout)
+        return ()
+
+    monkeypatch.setattr(exposure, "_public_dns_addresses", public_dns_addresses)
 
     result = exposure._wait_public_dns(
         "logs.example.com",
@@ -96,6 +110,7 @@ def test_wait_public_dns_times_out_when_expected_address_never_appears(monkeypat
     assert result["ok"] is False
     assert result["attempts"] == 1
     assert result["observed"] == []
+    assert budgets == [0.0]
 
 
 def test_dependency_exposure_rejects_non_loopback_upstream() -> None:
