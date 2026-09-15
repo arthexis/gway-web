@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 import pytest
 
 from gway_web.api_config import APIConfig, APIProjectExposure
+from gway_web.api_dispatch import APIArgumentError
 from gway_web.api_http import create_api_server
 
 
@@ -85,13 +87,30 @@ def _request(
     *,
     host: str = "repo.gway.example.com",
 ):
-    connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=2)
+    connection = http.client.HTTPConnection(
+        "127.0.0.1",
+        server.server_address[1],
+        timeout=2,
+    )
     connection.request(method, target, headers={"Host": host})
     response = connection.getresponse()
     body = response.read()
     headers = dict(response.getheaders())
     connection.close()
     return response.status, headers, json.loads(body.decode("utf-8"))
+
+
+def _raw_request(server, request: bytes):
+    with socket.create_connection(
+        ("127.0.0.1", server.server_address[1]),
+        timeout=2,
+    ) as sock:
+        sock.sendall(request)
+        response = http.client.HTTPResponse(sock)
+        response.begin()
+        body = response.read()
+        headers = dict(response.getheaders())
+        return response.status, headers, json.loads(body.decode("utf-8"))
 
 
 def test_get_executes_one_exposed_call_and_returns_json_envelope() -> None:
@@ -157,9 +176,28 @@ def test_invalid_request_syntax_maps_to_400_without_dispatch() -> None:
     assert dispatcher.calls == []
 
 
-def test_invocation_value_errors_map_to_invalid_arguments() -> None:
+def test_malformed_absolute_request_target_maps_to_structured_400() -> None:
     dispatcher = _Dispatcher()
-    dispatcher.error = ValueError("missing required arguments: issue")
+
+    with _running_server(dispatcher) as server:
+        status, _, body = _raw_request(
+            server,
+            b"GET http://[::1/x HTTP/1.1\r\n"
+            b"Host: repo.gway.example.com\r\n"
+            b"Connection: close\r\n\r\n",
+        )
+
+    assert status == 400
+    assert body == {
+        "ok": False,
+        "error": {"type": "invalid_request", "message": "invalid request target"},
+    }
+    assert dispatcher.calls == []
+
+
+def test_transport_safe_argument_errors_map_to_invalid_arguments() -> None:
+    dispatcher = _Dispatcher()
+    dispatcher.error = APIArgumentError("missing required arguments: issue")
 
     with _running_server(dispatcher) as server:
         status, _, body = _request(server, "GET", "/impact")
@@ -172,6 +210,21 @@ def test_invocation_value_errors_map_to_invalid_arguments() -> None:
             "message": "missing required arguments: issue",
         },
     }
+
+
+def test_callable_value_errors_do_not_leak_internal_details() -> None:
+    dispatcher = _Dispatcher()
+    dispatcher.error = ValueError("private application detail")
+
+    with _running_server(dispatcher) as server:
+        status, _, body = _request(server, "GET", "/impact")
+
+    assert status == 500
+    assert body == {
+        "ok": False,
+        "error": {"type": "internal_error", "message": "request execution failed"},
+    }
+    assert "private application detail" not in json.dumps(body)
 
 
 def test_unexpected_errors_do_not_leak_internal_details() -> None:
@@ -193,14 +246,18 @@ def test_unsupported_methods_return_json_405_and_allow_get() -> None:
     dispatcher = _Dispatcher()
 
     with _running_server(dispatcher) as server:
-        status, headers, body = _request(server, "POST", "/impact")
+        for method in ("POST", "TRACE", "CONNECT"):
+            status, headers, body = _request(server, method, "/impact")
+            assert status == 405
+            assert headers["Allow"] == "GET"
+            assert body == {
+                "ok": False,
+                "error": {
+                    "type": "method_not_allowed",
+                    "message": "only GET is supported",
+                },
+            }
 
-    assert status == 405
-    assert headers["Allow"] == "GET"
-    assert body == {
-        "ok": False,
-        "error": {"type": "method_not_allowed", "message": "only GET is supported"},
-    }
     assert dispatcher.calls == []
 
 

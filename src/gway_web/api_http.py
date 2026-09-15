@@ -9,13 +9,22 @@ from urllib.parse import urlsplit
 
 from .api_config import APIConfig
 from .api_discovery import discover_project
-from .api_dispatch import APINotFoundError, DispatcherLike, dispatch_api_request
+from .api_dispatch import (
+    APIArgumentError,
+    APINotFoundError,
+    DispatcherLike,
+    dispatch_api_request,
+)
 from .api_routing import APITranslationError, project_from_host, translate_request
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024
 _MIN_MAX_RESPONSE_BYTES = 256
 _MAX_ERROR_MESSAGE_BYTES = 128
+
+
+class _ResponseTooLargeError(ValueError):
+    """Raised when bounded JSON encoding exceeds the configured response limit."""
 
 
 def _encode_json(payload: object) -> bytes:
@@ -25,6 +34,22 @@ def _encode_json(payload: object) -> bytes:
         allow_nan=False,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _encode_json_bounded(payload: object, max_bytes: int) -> bytes:
+    """Encode JSON incrementally and stop once the byte budget is exceeded."""
+    encoder = json.JSONEncoder(
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    )
+    body = bytearray()
+    for chunk in encoder.iterencode(payload):
+        encoded = chunk.encode("utf-8")
+        if len(body) + len(encoded) > max_bytes:
+            raise _ResponseTooLargeError
+        body.extend(encoded)
+    return bytes(body)
 
 
 def _bounded_message(value: object) -> str:
@@ -90,12 +115,15 @@ class GWayAPIRequestHandler(BaseHTTPRequestHandler):
 
     def _write_result(self, result: object) -> None:
         try:
-            body = _encode_json({"ok": True, "result": result})
+            body = _encode_json_bounded(
+                {"ok": True, "result": result},
+                self.max_response_bytes,
+            )
+        except _ResponseTooLargeError:
+            self._write_error(500, "response_too_large", "callable result exceeds response limit")
+            return
         except (TypeError, ValueError, OverflowError):
             self._write_error(500, "invalid_result", "callable result is not JSON serializable")
-            return
-        if len(body) > self.max_response_bytes:
-            self._write_error(500, "response_too_large", "callable result exceeds response limit")
             return
         self._write_bytes(200, body)
 
@@ -122,7 +150,12 @@ class GWayAPIRequestHandler(BaseHTTPRequestHandler):
         )
 
     def do_GET(self) -> None:  # noqa: N802
-        target = urlsplit(self.path)
+        try:
+            target = urlsplit(self.path)
+        except ValueError:
+            self._write_error(400, "invalid_request", "invalid request target")
+            return
+
         try:
             if target.path == "/_gway":
                 result = self._discovery(target)
@@ -140,7 +173,7 @@ class GWayAPIRequestHandler(BaseHTTPRequestHandler):
         except APITranslationError as exc:
             self._write_error(400, "invalid_request", str(exc))
             return
-        except ValueError as exc:
+        except APIArgumentError as exc:
             self._write_error(400, "invalid_arguments", str(exc))
             return
         except Exception:
@@ -166,6 +199,12 @@ class GWayAPIRequestHandler(BaseHTTPRequestHandler):
         self._method_not_allowed()
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        self._method_not_allowed()
+
+    def do_TRACE(self) -> None:  # noqa: N802
+        self._method_not_allowed()
+
+    def do_CONNECT(self) -> None:  # noqa: N802
         self._method_not_allowed()
 
 

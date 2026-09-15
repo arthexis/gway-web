@@ -14,6 +14,10 @@ class APINotFoundError(LookupError):
     """Raised when a request does not resolve to an explicitly exposed API route."""
 
 
+class APIArgumentError(ValueError):
+    """Transport-safe argument error whose message may be returned to API clients."""
+
+
 class _ProjectLike(Protocol):
     name: str
 
@@ -55,10 +59,9 @@ def dispatch_api_request(
 ) -> object:
     """Authorize and invoke exactly one translated request through GWay.
 
-    Alias resolution is delegated to GWay's registry, but exposure is checked
-    only against the resulting canonical project name. The original project
-    token is then passed to ``Dispatcher.invoke`` so alias-bound arguments keep
-    their normal GWay meaning.
+    Dispatcher implementations may raise ``APIArgumentError`` only for
+    validation failures whose messages are explicitly safe to return to an
+    untrusted transport client. Other callable exceptions must propagate.
     """
     canonical_project = canonical_project_name(dispatcher, request.project)
     if not policy.command_exposed(canonical_project, request.command_path):
