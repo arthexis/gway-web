@@ -6,8 +6,6 @@ import ipaddress
 import os
 import socket
 
-from gway.dispatcher import Dispatcher
-
 from .api_config import read_api_config
 from .api_http import DEFAULT_MAX_RESPONSE_BYTES, serve_api
 
@@ -37,6 +35,8 @@ def _loopback_host(value: str) -> str:
 
 
 def main() -> None:
+    from gway.dispatcher import Dispatcher
+
     host = _loopback_host(os.environ.get("GWAY_WEB_API_HOST", DEFAULT_HOST))
     port = int(os.environ.get("GWAY_WEB_API_PORT", str(DEFAULT_PORT)))
     max_response_bytes = int(
