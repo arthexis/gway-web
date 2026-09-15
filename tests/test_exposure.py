@@ -206,6 +206,7 @@ def test_ensure_restores_dns_and_nginx_on_public_failure(monkeypatch) -> None:
             dns_zone="example.com",
             public_address="198.51.100.9",
             rollback=True,
+            dns_rollback=True,
         )
 
     assert persisted == []
@@ -239,6 +240,7 @@ def test_ensure_rolls_back_new_dns_record_when_propagation_times_out(monkeypatch
             public_address="203.0.113.10",
             dns_wait_timeout=12.0,
             rollback=True,
+            dns_rollback=True,
         )
 
     assert provider.records("logs.example.com", "A") == []
