@@ -17,7 +17,7 @@ from .certbot import renew as certbot_renew
 from .config import read_sites, write_sites
 from .health import health as probe_health
 from .health import status as probe_reachability
-from .logs import serve_logs
+from .log_query import list_log_runs, read_log_events
 from .nginx import disable as nginx_disable
 from .nginx import expose as nginx_expose
 from .nginx import reload as nginx_reload
@@ -305,13 +305,18 @@ def token(
 
 
 def logs(
+    run: str | None = None,
     *,
     source: str | None = None,
-    host: str = "127.0.0.1",
-    port: int = 8040,
-) -> None:
-    """Serve authenticated access to GWAY execution logs."""
-    serve_logs(source=source, host=host, port=port)
+    after: int | None = None,
+    limit: int = 100,
+) -> dict[str, object]:
+    """List GWAY log runs or read a bounded page of events from one run."""
+    if run is None:
+        if after is not None:
+            raise ValueError("--after requires a run id")
+        return {"runs": list_log_runs(source, limit=limit)}
+    return read_log_events(run, source, after=after, limit=limit)
 
 
 def _public_check(target: Site, timeout: float) -> tuple[bool, str]:
