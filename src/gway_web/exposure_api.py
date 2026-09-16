@@ -28,14 +28,17 @@ def _site_for_domain(fqdn: str) -> Site | None:
 
 
 def _preflight_temporary_name(fqdn: str, existing: Site | None) -> None:
-    """Reject a temporary FQDN identity already owned by another site."""
+    """Reject an FQDN identity already owned by another configured site."""
 
-    if existing is None:
-        return
     target_name = _normalized_domain(fqdn)
-    if existing.name == target_name:
-        return
-    collision = next((item for item in read_sites() if item.name == target_name), None)
+    collision = next(
+        (
+            item
+            for item in read_sites()
+            if item.name == target_name and (existing is None or item != existing)
+        ),
+        None,
+    )
     if collision is not None:
         raise ValueError(
             f"cannot expose {target_name!r}: site name is already used by "
@@ -90,7 +93,8 @@ def release(**kwargs: Any) -> dict[str, object]:
 
     fqdn = str(kwargs["fqdn"])
     existing = _site_for_domain(fqdn)
-    _preflight_temporary_name(fqdn, existing)
+    if existing is not None:
+        _preflight_temporary_name(fqdn, existing)
     original_name = existing.name if existing is not None else None
     target_name = _normalized_domain(fqdn)
     renamed = existing is not None and original_name != target_name
