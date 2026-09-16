@@ -70,25 +70,22 @@ def read_log_events(
         raise ValueError("after must be zero or greater")
 
     raw = read_run(run_id, log_source(source))
+    lines = [line for line in raw.splitlines() if line.strip()]
+    page = lines[cursor : cursor + selected_limit]
     events: list[dict[str, object]] = []
-    total = 0
-    for total, line in enumerate(raw.splitlines(), start=1):
-        if total <= cursor or not line.strip():
-            continue
+    for offset, line in enumerate(page, start=cursor + 1):
         try:
             event = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"invalid JSON event at line {total}") from exc
+            raise ValueError(f"invalid JSON event at line {offset}") from exc
         if not isinstance(event, dict):
-            raise ValueError(f"log event at line {total} is not an object")
+            raise ValueError(f"log event at line {offset} is not an object")
         events.append(event)
-        if len(events) >= selected_limit:
-            break
 
     next_cursor = cursor + len(events)
     return {
         "run_id": run_id,
         "events": events,
         "next_cursor": next_cursor,
-        "has_more": total > next_cursor,
+        "has_more": next_cursor < len(lines),
     }
