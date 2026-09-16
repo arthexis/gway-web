@@ -22,9 +22,9 @@ from .dns import (
     propagation_status as dns_propagation_status,
     wait_for_propagation as dns_wait_for_propagation,
 )
-from .exposure import check as exposure_check
-from .exposure import ensure as exposure_ensure
-from .exposure import release as exposure_release
+from .exposure_api import check as exposure_check
+from .exposure_api import ensure as exposure_ensure
+from .exposure_api import release as exposure_release
 from .health import HealthResult, health, status
 from .nginx import disable, enable, expose, reload, test
 from .public_dns import (
