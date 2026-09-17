@@ -61,6 +61,7 @@ class _Dispatcher:
                         default=True,
                         negative_options=("--no-include-tests",),
                     ),
+                    _Parameter("source", annotation=str, default="[repo.source]"),
                 ),
             ),
             _Command(("secret",), summary="Must remain hidden"),
@@ -119,6 +120,7 @@ def test_discovery_reports_only_exposed_commands_for_canonical_project() -> None
             "negative_options": ["--no-include-tests"],
         },
     ]
+    assert all(parameter["name"] != "source" for parameter in impact["parameters"])
 
 
 def test_discovery_omits_non_json_defaults() -> None:
