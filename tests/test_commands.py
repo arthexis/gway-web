@@ -25,7 +25,6 @@ def test_gway_command_surface_is_compact():
         "get_run",
         "list_runs",
         "logs",
-        "mcp",
         "reload",
         "serve",
         "site",
