@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from gway_web import commands
-from gway_web.log_query import list_log_runs, log_source, read_log_events
+from gway_web.log_query import get_log_run, list_log_runs, log_source, read_log_events
 
 
 def _write_run(root: Path, run_id: str, events: list[dict[str, object]]) -> None:
@@ -61,6 +61,25 @@ def test_log_query_is_bounded_and_cursor_based(tmp_path: Path):
     assert final["has_more"] is False
 
 
+def test_event_paging_does_not_materialize_complete_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = tmp_path / "runs"
+    events = [{"sequence": index} for index in range(200)]
+    _write_run(root, "run-1", events)
+
+    def fail_read_bytes(self: Path) -> bytes:
+        raise AssertionError("event paging must not use Path.read_bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    page = read_log_events("run-1", root, after=50, limit=3)
+
+    assert page["events"] == events[50:53]
+    assert page["next_cursor"] == 53
+    assert page["has_more"] is True
+
+
 def test_log_query_rejects_unbounded_limits(tmp_path: Path):
     with pytest.raises(ValueError, match="limit"):
         list_log_runs(tmp_path, limit=0)
@@ -75,6 +94,22 @@ def test_list_runs_command_returns_recent_runs(tmp_path: Path):
     result = commands.list_runs(source=str(root))
 
     assert [item["run_id"] for item in result["runs"]] == ["run-1"]
+
+
+def test_get_log_run_resolves_exact_run_without_recent_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = tmp_path / "runs"
+    _write_run(root, "run-1", [{"message": "hello"}])
+
+    def fail_iterdir(self: Path):
+        raise AssertionError("exact run lookup must not enumerate the run store")
+
+    monkeypatch.setattr(Path, "iterdir", fail_iterdir)
+
+    result = get_log_run("run-1", root)
+
+    assert result["run_id"] == "run-1"
 
 
 def test_get_run_command_returns_one_run_metadata(tmp_path: Path):
