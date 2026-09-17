@@ -25,6 +25,15 @@ def mcp_config_path() -> Path:
     return Path(os.environ.get(ENV_MCP_CONFIG, DEFAULT_MCP_CONFIG)).expanduser()
 
 
+def _public_host(value: str) -> str:
+    selected = value.strip().lower().rstrip(".")
+    if not selected or any(character.isspace() for character in selected):
+        raise ValueError("MCP public host must be a non-empty hostname")
+    if "/" in selected or "://" in selected:
+        raise ValueError("MCP public host must be a hostname, not a URL")
+    return selected
+
+
 @dataclass(frozen=True)
 class MCPProjectExposure:
     """Explicit MCP exposure for one canonical GWay project."""
@@ -50,6 +59,7 @@ class MCPConfig:
     """Agent exposure policy layered strictly below HTTP API exposure."""
 
     projects: tuple[MCPProjectExposure, ...] = ()
+    public_hosts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         normalized = tuple(self.projects)
@@ -57,6 +67,8 @@ class MCPConfig:
         if len(names) != len(set(names)):
             raise ValueError("MCP project names must be unique")
         object.__setattr__(self, "projects", normalized)
+        hosts = tuple(dict.fromkeys(_public_host(value) for value in self.public_hosts))
+        object.__setattr__(self, "public_hosts", hosts)
 
     def command_exposed(
         self,
@@ -105,6 +117,12 @@ def read_mcp_config(path: str | Path | None = None) -> MCPConfig:
     if not isinstance(raw_mcp, dict):
         raise TypeError("mcp must be a TOML table")
 
+    raw_hosts = raw_mcp.get("public_hosts", [])
+    if not isinstance(raw_hosts, list) or not all(
+        isinstance(value, str) and value.strip() for value in raw_hosts
+    ):
+        raise TypeError("mcp.public_hosts must be an array of hostnames")
+
     raw_projects = raw_mcp.get("projects", {})
     if not isinstance(raw_projects, dict):
         raise TypeError("mcp.projects must be a TOML table")
@@ -125,14 +143,21 @@ def read_mcp_config(path: str | Path | None = None) -> MCPConfig:
             )
         )
 
-    return MCPConfig(projects=tuple(projects))
+    return MCPConfig(
+        projects=tuple(projects),
+        public_hosts=tuple(raw_hosts),
+    )
 
 
 def write_mcp_config(config: MCPConfig, path: str | Path | None = None) -> Path:
     """Atomically replace the dedicated MCP exposure policy file."""
     target = Path(path).expanduser() if path is not None else mcp_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["[mcp]", ""]
+    lines = ["[mcp]"]
+    if config.public_hosts:
+        hosts = ", ".join(json.dumps(value) for value in config.public_hosts)
+        lines.append(f"public_hosts = [{hosts}]")
+    lines.append("")
     for project in sorted(config.projects, key=lambda item: item.name):
         lines.append(f"[mcp.projects.{json.dumps(project.name)}]")
         functions = ["/".join(path) for path in sorted(project.functions)]
