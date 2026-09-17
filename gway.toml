@@ -6,9 +6,12 @@ aliases = ["gway-web"]
 type = "python"
 module = "gway_web.commands"
 
+[variables.logs]
+source = "~/.local/state/gway/runs"
+
 [services.logs]
 description = "GWAY Web authenticated log service"
-command = ["{python}", "-m", "gway_web.log_service"]
+command = ["{python}", "-m", "gway_web.log_service", "--source", "[logs.source]"]
 restart = "on-failure"
 
 [services.api]
