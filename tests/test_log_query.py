@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
@@ -18,30 +19,25 @@ def _write_run(root: Path, run_id: str, events: list[dict[str, object]]) -> None
     )
 
 
-def test_semantic_log_source_precedes_legacy_environment(
+def test_log_source_uses_explicit_source(tmp_path: Path):
+    explicit = tmp_path / "explicit"
+
+    assert log_source(explicit) == explicit
+
+
+def test_log_source_keeps_legacy_store_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    semantic = tmp_path / "semantic"
     legacy = tmp_path / "legacy"
-    monkeypatch.setenv("GWAY_LOGS_SOURCE", str(semantic))
-    monkeypatch.setenv("GWAY_LOG_DIR", str(legacy))
-
-    assert log_source() == semantic
-
-
-def test_legacy_log_source_remains_compatible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    legacy = tmp_path / "legacy"
-    monkeypatch.delenv("GWAY_LOGS_SOURCE", raising=False)
     monkeypatch.setenv("GWAY_LOG_DIR", str(legacy))
 
     assert log_source() == legacy
 
 
-def test_explicit_log_source_precedes_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    explicit = tmp_path / "explicit"
-    monkeypatch.setenv("GWAY_LOGS_SOURCE", str(tmp_path / "semantic"))
+def test_logs_command_declares_semantic_source_sigil():
+    source = inspect.signature(commands.logs).parameters["source"]
 
-    assert log_source(explicit) == explicit
+    assert source.default == "[logs.source]"
 
 
 def test_log_query_is_bounded_and_cursor_based(tmp_path: Path):
