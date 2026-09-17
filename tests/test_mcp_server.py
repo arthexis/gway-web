@@ -5,15 +5,38 @@ from dataclasses import dataclass
 
 from mcp import Client
 
-from gway_web.api_config import APIConfig, APIProjectExposure
-from gway_web.mcp_config import MCPConfig, MCPProjectExposure
+from gway_web.api_config import APIConfig, APIProjectExposure, write_api_config
+from gway_web.mcp_config import MCPConfig, MCPProjectExposure, write_mcp_config
 from gway_web.mcp_schema import tools_from_discovery
-from gway_web.mcp_server import build_mcp_server, streamable_http_app
+from gway_web.mcp_server import (
+    build_configured_mcp_server,
+    build_mcp_server,
+    streamable_http_app,
+)
 
 
 @dataclass
 class _Project:
     name: str
+
+
+@dataclass
+class _Parameter:
+    name: str
+    required: bool = False
+    positional: bool = False
+    annotation: object | None = None
+    default: object = None
+    help: str | None = None
+    negative_options: tuple[str, ...] | None = None
+
+
+@dataclass
+class _Command:
+    path: tuple[str, ...]
+    summary: str | None = None
+    description: str | None = None
+    parameters: tuple[_Parameter, ...] = ()
 
 
 class _Registry:
@@ -27,6 +50,18 @@ class _Dispatcher:
     def __init__(self) -> None:
         self.registry = _Registry()
         self.calls = []
+
+    def commands(self, project_name: str) -> tuple[_Command, ...]:
+        assert project_name == "repo"
+        return (
+            _Command(
+                ("context",),
+                summary="Read context",
+                parameters=(
+                    _Parameter("query", required=True, annotation=str),
+                ),
+            ),
+        )
 
     def invoke(self, project_name, command_path, arguments=None):
         self.calls.append((project_name, command_path, dict(arguments or {})))
@@ -101,6 +136,57 @@ def test_mcp_server_is_closed_without_authorizer() -> None:
             result = await client.call_tool("repo_context", {"query": "battery"})
             assert result.is_error is True
             assert "not exposed" in result.content[0].text
+
+        assert dispatcher.calls == []
+
+    asyncio.run(exercise())
+
+
+def test_configured_mcp_server_loads_persisted_policies(tmp_path, monkeypatch) -> None:
+    async def exercise() -> None:
+        api_path = tmp_path / "api.toml"
+        mcp_path = tmp_path / "mcp.toml"
+        api, mcp = _policies()
+        write_api_config(api, api_path)
+        write_mcp_config(mcp, mcp_path)
+        monkeypatch.setenv("GWAY_WEB_API_CONFIG", str(api_path))
+        monkeypatch.setenv("GWAY_WEB_MCP_CONFIG", str(mcp_path))
+
+        dispatcher = _Dispatcher()
+        server = build_configured_mcp_server(
+            dispatcher,
+            authorizer=lambda context, target: True,
+        )
+
+        async with Client(server) as client:
+            listed = await client.list_tools()
+            assert [tool.name for tool in listed.tools] == ["repo_context"]
+            result = await client.call_tool("repo_context", {"query": "battery"})
+            assert result.is_error is False
+
+        assert dispatcher.calls == [
+            ("repo", ("context",), {"query": "battery"})
+        ]
+
+    asyncio.run(exercise())
+
+
+def test_configured_mcp_server_is_empty_when_policy_files_are_absent(
+    tmp_path, monkeypatch
+) -> None:
+    async def exercise() -> None:
+        monkeypatch.setenv("GWAY_WEB_API_CONFIG", str(tmp_path / "missing-api.toml"))
+        monkeypatch.setenv("GWAY_WEB_MCP_CONFIG", str(tmp_path / "missing-mcp.toml"))
+
+        dispatcher = _Dispatcher()
+        server = build_configured_mcp_server(
+            dispatcher,
+            authorizer=lambda context, target: True,
+        )
+
+        async with Client(server) as client:
+            listed = await client.list_tools()
+            assert listed.tools == []
 
         assert dispatcher.calls == []
 
