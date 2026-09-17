@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from gway_web import commands
 from gway_web.mcp_config import (
     MCPConfig,
     MCPProjectExposure,
@@ -46,11 +47,15 @@ def test_invalid_mcp_functions_are_rejected(tmp_path) -> None:
         read_mcp_config(path)
 
 
+def test_mcp_command_is_exposed_through_gway_command_module() -> None:
+    assert commands.mcp is mcp
+
+
 def test_mcp_command_configures_read_only_log_tools(tmp_path, monkeypatch) -> None:
     path = tmp_path / "mcp.toml"
     monkeypatch.setenv("GWAY_WEB_MCP_CONFIG", str(path))
 
-    result = mcp(project="web", functions="list-runs,get-run,get-events")
+    result = commands.mcp(project="web", functions="list-runs,get-run,get-events")
 
     assert result["projects"] == [
         {
