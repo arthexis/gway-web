@@ -17,7 +17,7 @@ from .certbot import renew as certbot_renew
 from .config import read_sites, write_sites
 from .health import health as probe_health
 from .health import status as probe_reachability
-from .log_query import list_log_runs, read_log_events
+from .log_query import get_log_run, list_log_runs, read_log_events
 from .mcp_commands import mcp
 from .nginx import disable as nginx_disable
 from .nginx import expose as nginx_expose
@@ -320,10 +320,7 @@ def get_run(
     source: str = "[logs.source]",
 ) -> dict[str, object]:
     """Return metadata for one GWAY log run."""
-    for item in list_log_runs(source, limit=1000):
-        if item.get("run_id") == run:
-            return item
-    raise KeyError(f"unknown run: {run}")
+    return get_log_run(run, source)
 
 
 def get_events(
