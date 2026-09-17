@@ -15,13 +15,6 @@ def test_explicit_log_commands_generate_narrow_mcp_surface() -> None:
                 "parameters": [
                     {"name": "run", "required": True, "positional": True, "type": "str"},
                     {
-                        "name": "source",
-                        "required": False,
-                        "positional": False,
-                        "type": "str",
-                        "default": "[logs.source]",
-                    },
-                    {
                         "name": "after",
                         "required": False,
                         "positional": False,
@@ -42,26 +35,12 @@ def test_explicit_log_commands_generate_narrow_mcp_surface() -> None:
                 "summary": "Return metadata for one log run",
                 "parameters": [
                     {"name": "run", "required": True, "positional": True, "type": "str"},
-                    {
-                        "name": "source",
-                        "required": False,
-                        "positional": False,
-                        "type": "str",
-                        "default": "[logs.source]",
-                    },
                 ],
             },
             {
                 "path": ["list-runs"],
                 "summary": "List recent log runs",
                 "parameters": [
-                    {
-                        "name": "source",
-                        "required": False,
-                        "positional": False,
-                        "type": "str",
-                        "default": "[logs.source]",
-                    },
                     {
                         "name": "limit",
                         "required": False,
@@ -103,3 +82,7 @@ def test_explicit_log_commands_generate_narrow_mcp_surface() -> None:
         "web_list_runs",
     ]
     assert all(tool["command"] != ["logs"] for tool in tools)
+    assert all(
+        "source" not in tool["inputSchema"].get("properties", {})
+        for tool in tools
+    )
