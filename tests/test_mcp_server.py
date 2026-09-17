@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+import pytest
 from mcp import Client
 
 from gway_web.api_config import APIConfig, APIProjectExposure, write_api_config
 from gway_web.mcp_config import MCPConfig, MCPProjectExposure, write_mcp_config
+from gway_web.mcp_dispatch import MCPToolExecutionError
 from gway_web.mcp_schema import tools_from_discovery
 from gway_web.mcp_server import (
+    _result,
     build_configured_mcp_server,
     build_mcp_server,
     streamable_http_app,
@@ -184,6 +187,13 @@ def test_mcp_server_is_closed_without_authorizer() -> None:
         assert dispatcher.calls == []
 
     asyncio.run(exercise())
+
+
+def test_complete_mcp_result_size_is_bounded() -> None:
+    value = {"payload": "x" * (140 * 1024)}
+
+    with pytest.raises(MCPToolExecutionError, match="response limit"):
+        _result(value)
 
 
 def test_configured_mcp_server_loads_persisted_policies(tmp_path, monkeypatch) -> None:
