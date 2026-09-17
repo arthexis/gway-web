@@ -51,6 +51,14 @@ def _safe_default(parameter: _ParameterLike) -> tuple[bool, object | None]:
     return True, value
 
 
+def _semantic_default(parameter: _ParameterLike) -> bool:
+    """Return whether a parameter default is a server-resolved GWay Sigil."""
+    if parameter.required or not isinstance(parameter.default, str):
+        return False
+    value = parameter.default.strip()
+    return len(value) >= 2 and value.startswith("[") and value.endswith("]")
+
+
 def _parameter_payload(parameter: _ParameterLike) -> dict[str, object]:
     payload: dict[str, object] = {
         "name": parameter.name,
@@ -73,7 +81,11 @@ def _parameter_payload(parameter: _ParameterLike) -> dict[str, object]:
 def _command_payload(command: _CommandLike) -> dict[str, object]:
     payload: dict[str, object] = {
         "path": list(command.path),
-        "parameters": [_parameter_payload(parameter) for parameter in command.parameters],
+        "parameters": [
+            _parameter_payload(parameter)
+            for parameter in command.parameters
+            if not _semantic_default(parameter)
+        ],
     }
     if command.summary:
         payload["summary"] = command.summary

@@ -17,7 +17,8 @@ from .certbot import renew as certbot_renew
 from .config import read_sites, write_sites
 from .health import health as probe_health
 from .health import status as probe_reachability
-from .logs import serve_logs
+from .log_query import get_log_run, list_log_runs, read_log_events
+from .mcp_commands import mcp
 from .nginx import disable as nginx_disable
 from .nginx import expose as nginx_expose
 from .nginx import reload as nginx_reload
@@ -304,14 +305,48 @@ def token(
     return issue_token(name=name, scopes=scope, ttl=ttl)
 
 
-def logs(
+def list_runs(
     *,
-    source: str | None = None,
-    host: str = "127.0.0.1",
-    port: int = 8040,
-) -> None:
-    """Serve authenticated access to GWAY execution logs."""
-    serve_logs(source=source, host=host, port=port)
+    source: str = "[logs.source]",
+    limit: int = 100,
+) -> dict[str, object]:
+    """List recent GWAY log runs from the resolved log source."""
+    return {"runs": list_log_runs(source, limit=limit)}
+
+
+def get_run(
+    run: str,
+    *,
+    source: str = "[logs.source]",
+) -> dict[str, object]:
+    """Return metadata for one GWAY log run."""
+    return get_log_run(run, source)
+
+
+def get_events(
+    run: str,
+    *,
+    source: str = "[logs.source]",
+    after: int | None = None,
+    limit: int = 100,
+) -> dict[str, object]:
+    """Read one bounded cursor page of events from a GWAY log run."""
+    return read_log_events(run, source, after=after, limit=limit)
+
+
+def logs(
+    run: str | None = None,
+    *,
+    source: str = "[logs.source]",
+    after: int | None = None,
+    limit: int = 100,
+) -> dict[str, object]:
+    """Compatibility wrapper for the explicit read-only log commands."""
+    if run is None:
+        if after is not None:
+            raise ValueError("--after requires a run id")
+        return list_runs(source=source, limit=limit)
+    return get_events(run, source=source, after=after, limit=limit)
 
 
 def _public_check(target: Site, timeout: float) -> tuple[bool, str]:

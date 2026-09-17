@@ -58,6 +58,40 @@ def _transport_safe_argument_error(error: BaseException) -> bool:
     return getattr(type(error), _SAFE_ARGUMENT_MARKER, False) is True
 
 
+def _normalized_path(path: object) -> tuple[str, ...] | None:
+    if not isinstance(path, tuple) or not path or not all(isinstance(part, str) for part in path):
+        return None
+    return tuple(part.strip().replace("_", "-").casefold() for part in path)
+
+
+def _semantic_default(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    return len(text) >= 2 and text.startswith("[") and text.endswith("]")
+
+
+def _server_owned_arguments(
+    dispatcher: DispatcherLike,
+    canonical_project: str,
+    command_path: tuple[str, ...],
+) -> frozenset[str]:
+    """Return semantic-default parameters that remote callers may not override."""
+    commands = getattr(dispatcher, "commands", None)
+    if not callable(commands):
+        return frozenset()
+    requested = tuple(part.replace("_", "-").casefold() for part in command_path)
+    for command in commands(canonical_project):
+        if _normalized_path(getattr(command, "path", None)) != requested:
+            continue
+        return frozenset(
+            parameter.name
+            for parameter in getattr(command, "parameters", ())
+            if _semantic_default(getattr(parameter, "default", None))
+        )
+    return frozenset()
+
+
 def dispatch_api_request(
     dispatcher: DispatcherLike,
     policy: APIConfig,
@@ -74,6 +108,12 @@ def dispatch_api_request(
     canonical_project = canonical_project_name(dispatcher, request.project)
     if not policy.command_exposed(canonical_project, request.command_path):
         raise APINotFoundError(_NOT_FOUND_MESSAGE)
+
+    server_owned = _server_owned_arguments(dispatcher, canonical_project, request.command_path)
+    supplied_server_owned = sorted(server_owned.intersection(request.arguments))
+    if supplied_server_owned:
+        name = supplied_server_owned[0]
+        raise APIArgumentError(f"argument {name!r} is server-managed")
 
     try:
         return dispatcher.invoke(
