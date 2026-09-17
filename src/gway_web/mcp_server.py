@@ -23,6 +23,7 @@ from .api_discovery import DiscoveryDispatcherLike, discover_project
 from .api_dispatch import DispatcherLike
 from .mcp_config import MCPConfig, read_mcp_config
 from .mcp_dispatch import (
+    MAX_MCP_RESPONSE_BYTES,
     MCPToolArgumentError,
     MCPToolError,
     MCPToolExecutionError,
@@ -34,6 +35,7 @@ from .mcp_dispatch import (
 from .mcp_schema import tools_from_discovery
 
 Authorizer = Callable[[ServerRequestContext[Any], MCPToolTarget | None], bool | Awaitable[bool]]
+_JSON_RPC_ENVELOPE_RESERVE = 1024
 
 
 async def _authorized(
@@ -68,12 +70,21 @@ def _protocol_tools(tools: Sequence[Mapping[str, object]]) -> list[Tool]:
 
 
 def _result(value: object) -> CallToolResult:
+    """Build one bounded MCP result, accounting for both wire representations."""
     text = json.dumps(value, default=str, allow_nan=False, ensure_ascii=False)
     structured = value if isinstance(value, dict) else {"result": value}
-    return CallToolResult(
+    result = CallToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=structured,
     )
+    wire = json.dumps(
+        result.model_dump(by_alias=True, mode="json", exclude_none=True),
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    if len(wire) + _JSON_RPC_ENVELOPE_RESERVE > MAX_MCP_RESPONSE_BYTES:
+        raise MCPToolExecutionError("tool result exceeds MCP response limit")
+    return result
 
 
 def _error(error: MCPToolError) -> CallToolResult:
@@ -130,9 +141,9 @@ def build_mcp_server(
                 params.name,
                 params.arguments or {},
             )
+            return _result(value)
         except (MCPToolNotFoundError, MCPToolArgumentError, MCPToolExecutionError) as exc:
             return _error(exc)
-        return _result(value)
 
     return Server(
         name,
