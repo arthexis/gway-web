@@ -124,6 +124,50 @@ def test_mcp_server_lists_and_calls_authorized_tools_in_process() -> None:
     asyncio.run(exercise())
 
 
+def test_mcp_server_filters_tool_listing_per_target_authorization() -> None:
+    async def exercise() -> None:
+        dispatcher = _Dispatcher()
+        api = APIConfig(
+            projects=(
+                APIProjectExposure("repo", frozenset({("context",)})),
+                APIProjectExposure("web", frozenset({("list-runs",)})),
+            )
+        )
+        mcp = MCPConfig(
+            projects=(
+                MCPProjectExposure("repo", frozenset({("context",)})),
+                MCPProjectExposure("web", frozenset({("list-runs",)})),
+            )
+        )
+        tools = [
+            {
+                "name": "repo_context",
+                "project": "repo",
+                "command": ["context"],
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "web_list_runs",
+                "project": "web",
+                "command": ["list-runs"],
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+        ]
+        server = build_mcp_server(
+            dispatcher,
+            api,
+            mcp,
+            tools,
+            authorizer=lambda context, target: target is not None and target.project == "repo",
+        )
+
+        async with Client(server) as client:
+            listed = await client.list_tools()
+            assert [tool.name for tool in listed.tools] == ["repo_context"]
+
+    asyncio.run(exercise())
+
+
 def test_mcp_server_is_closed_without_authorizer() -> None:
     async def exercise() -> None:
         dispatcher = _Dispatcher()
