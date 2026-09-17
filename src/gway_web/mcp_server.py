@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from mcp.server import Server, ServerRequestContext
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import (
     CallToolRequestParams,
     CallToolResult,
@@ -190,14 +191,23 @@ def streamable_http_app(
     server: Server[Any],
     *,
     host: str = "127.0.0.1",
+    allowed_hosts: Sequence[str] = (),
     json_response: bool = True,
     stateless_http: bool = True,
 ):
-    """Build the SDK Streamable HTTP ASGI app for an MCP server."""
+    """Build the SDK Streamable HTTP ASGI app with explicit Host protection."""
+    hosts = ["localhost", "localhost:*", "127.0.0.1", "127.0.0.1:*"]
+    for value in allowed_hosts:
+        selected = value.strip().lower().rstrip(".")
+        if not selected:
+            continue
+        hosts.extend([selected, f"{selected}:*"])
+    security = TransportSecuritySettings(allowed_hosts=list(dict.fromkeys(hosts)))
     return server.streamable_http_app(
         host=host,
         json_response=json_response,
         stateless_http=stateless_http,
+        transport_security=security,
     )
 
 
