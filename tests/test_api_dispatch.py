@@ -19,6 +19,18 @@ class _Project:
     name: str
 
 
+@dataclass(frozen=True)
+class _Parameter:
+    name: str
+    default: object = None
+
+
+@dataclass(frozen=True)
+class _Command:
+    path: tuple[str, ...]
+    parameters: tuple[_Parameter, ...] = ()
+
+
 class _Registry:
     def __init__(self, projects: dict[str, _Project]) -> None:
         self.projects = projects
@@ -36,6 +48,10 @@ class _Dispatcher:
         self.result = result
         self.calls: list[tuple[str, tuple[str, ...], dict[str, str]]] = []
         self.error: Exception | None = None
+        self.command_metadata: tuple[_Command, ...] = ()
+
+    def commands(self, project_name: str) -> tuple[_Command, ...]:
+        return self.command_metadata
 
     def invoke(
         self,
@@ -133,6 +149,29 @@ def test_dispatch_preserves_literal_argument_values() -> None:
             {"literal": "[project.name]", "include-impact": "false"},
         )
     ]
+
+
+def test_dispatch_rejects_server_owned_semantic_default_override() -> None:
+    dispatcher = _Dispatcher({"web": _Project("web")}, result=True)
+    dispatcher.command_metadata = (
+        _Command(
+            ("get-events",),
+            parameters=(
+                _Parameter("run"),
+                _Parameter("source", "[logs.source]"),
+            ),
+        ),
+    )
+    request = APIRequest(
+        "web",
+        ("get-events",),
+        {"run": "run-1", "source": "/etc"},
+    )
+
+    with pytest.raises(APIArgumentError, match="server-managed"):
+        dispatch_api_request(dispatcher, _policy(("get-events",), project="web"), request)
+
+    assert dispatcher.calls == []
 
 
 def test_transport_safe_core_argument_error_maps_to_api_argument_error() -> None:
