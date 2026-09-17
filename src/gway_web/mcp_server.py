@@ -94,9 +94,9 @@ def build_mcp_server(
 ) -> Server[Any]:
     """Build a read-only low-level MCP server from prevalidated tool metadata.
 
-    An authorizer is required for tools to be visible or callable. This keeps
-    the protocol boundary closed by default until a deployment supplies reader
-    identity/authentication policy.
+    An authorizer is required for tools to be visible or callable. Tool listing
+    is filtered target-by-target so credentials for one project never reveal
+    another project's MCP schema.
     """
     protocol_tools = _protocol_tools(tools)
     targets = targets_from_tools(tools)
@@ -106,9 +106,12 @@ def build_mcp_server(
         params: PaginatedRequestParams | None,
     ) -> ListToolsResult:
         del params
-        if not await _authorized(authorizer, context, None):
-            return ListToolsResult(tools=[])
-        return ListToolsResult(tools=protocol_tools)
+        visible: list[Tool] = []
+        for tool in protocol_tools:
+            target = targets.get(tool.name)
+            if target is not None and await _authorized(authorizer, context, target):
+                visible.append(tool)
+        return ListToolsResult(tools=visible)
 
     async def call_tool(
         context: ServerRequestContext[Any],
