@@ -60,6 +60,50 @@ Authorization: Bearer <repo token>
 
 `GET /_gway` reports only exposed command metadata and is bearer-protected. Known but unexposed commands remain hidden with `404`.
 
+## MCP exposure
+
+MCP has its own persistent deny-by-default policy at `~/.config/gway/mcp.toml` by default, overridable with `GWAY_WEB_MCP_CONFIG`.
+
+MCP exposure is always narrower than HTTP exposure:
+
+```text
+GWay callable
+  -> HTTP allowlist
+    -> MCP allowlist
+```
+
+Adding a command to `mcp.toml` never makes it remotely callable unless the same canonical project and command are already present in the HTTP API policy.
+
+Configure the policy through GWay:
+
+```text
+gway web mcp --project web --functions list-runs,get-run,get-events
+```
+
+For the live-log integration, configure both layers explicitly:
+
+```text
+gway web api --project web --functions list-runs,get-run,get-events --scope logs:read
+gway web mcp --project web --functions list-runs,get-run,get-events
+```
+
+This produces policy equivalent to:
+
+```toml
+# ~/.config/gway/api.toml
+[api.projects.web]
+functions = ["get-events", "get-run", "list-runs"]
+scope = "logs:read"
+```
+
+```toml
+# ~/.config/gway/mcp.toml
+[mcp.projects.web]
+functions = ["get-events", "get-run", "list-runs"]
+```
+
+The legacy combined `logs` command remains available for compatibility but is intentionally omitted from the MCP allowlist. MCP clients see only the explicit read-only tools.
+
 ## Argument errors
 
 The HTTP boundary returns `400 invalid_arguments` only for failures that GWay's programmatic invocation boundary explicitly classifies as transport-safe argument binding or conversion errors. Ordinary exceptions raised by the called project remain server-side failures and their messages are not returned to clients.
