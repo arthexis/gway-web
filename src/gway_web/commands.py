@@ -18,6 +18,7 @@ from .config import read_sites, write_sites
 from .health import health as probe_health
 from .health import status as probe_reachability
 from .log_query import list_log_runs, read_log_events
+from .mcp_commands import mcp
 from .nginx import disable as nginx_disable
 from .nginx import expose as nginx_expose
 from .nginx import reload as nginx_reload
