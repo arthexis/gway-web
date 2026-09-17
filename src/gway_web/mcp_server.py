@@ -1,0 +1,154 @@
+"""Thin MCP protocol adapter over generated GWay Web tool metadata."""
+
+from __future__ import annotations
+
+import inspect
+import json
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Any
+
+from mcp.server import Server, ServerRequestContext
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+    TextContent,
+    Tool,
+)
+
+from .api_config import APIConfig
+from .api_dispatch import DispatcherLike
+from .mcp_config import MCPConfig
+from .mcp_dispatch import (
+    MCPToolArgumentError,
+    MCPToolError,
+    MCPToolExecutionError,
+    MCPToolNotFoundError,
+    MCPToolTarget,
+    dispatch_mcp_tool,
+    targets_from_tools,
+)
+
+Authorizer = Callable[[ServerRequestContext[Any], MCPToolTarget | None], bool | Awaitable[bool]]
+
+
+async def _authorized(
+    authorizer: Authorizer | None,
+    context: ServerRequestContext[Any],
+    target: MCPToolTarget | None,
+) -> bool:
+    if authorizer is None:
+        return False
+    allowed = authorizer(context, target)
+    if inspect.isawaitable(allowed):
+        allowed = await allowed
+    return allowed is True
+
+
+def _protocol_tools(tools: Sequence[Mapping[str, object]]) -> list[Tool]:
+    result: list[Tool] = []
+    for tool in tools:
+        name = tool.get("name")
+        schema = tool.get("inputSchema")
+        description = tool.get("description")
+        if not isinstance(name, str) or not isinstance(schema, dict):
+            raise ValueError("invalid generated MCP tool metadata")
+        result.append(
+            Tool(
+                name=name,
+                description=description if isinstance(description, str) else None,
+                input_schema=schema,
+            )
+        )
+    return result
+
+
+def _result(value: object) -> CallToolResult:
+    text = json.dumps(value, default=str, allow_nan=False, ensure_ascii=False)
+    structured = value if isinstance(value, dict) else {"result": value}
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured,
+    )
+
+
+def _error(error: MCPToolError) -> CallToolResult:
+    return CallToolResult(
+        content=[TextContent(type="text", text=str(error))],
+        is_error=True,
+    )
+
+
+def build_mcp_server(
+    dispatcher: DispatcherLike,
+    api_policy: APIConfig,
+    mcp_policy: MCPConfig,
+    tools: Sequence[Mapping[str, object]],
+    *,
+    authorizer: Authorizer | None = None,
+    name: str = "gway-web",
+    version: str = "0.1.0",
+) -> Server[Any]:
+    """Build a read-only low-level MCP server from prevalidated tool metadata.
+
+    An authorizer is required for tools to be visible or callable. This keeps
+    the protocol boundary closed by default until a deployment supplies reader
+    identity/authentication policy.
+    """
+    protocol_tools = _protocol_tools(tools)
+    targets = targets_from_tools(tools)
+
+    async def list_tools(
+        context: ServerRequestContext[Any],
+        params: PaginatedRequestParams | None,
+    ) -> ListToolsResult:
+        del params
+        if not await _authorized(authorizer, context, None):
+            return ListToolsResult(tools=[])
+        return ListToolsResult(tools=protocol_tools)
+
+    async def call_tool(
+        context: ServerRequestContext[Any],
+        params: CallToolRequestParams,
+    ) -> CallToolResult:
+        target = targets.get(params.name)
+        if target is None or not await _authorized(authorizer, context, target):
+            return _error(MCPToolNotFoundError("MCP tool is not exposed"))
+        try:
+            value = dispatch_mcp_tool(
+                dispatcher,
+                api_policy,
+                mcp_policy,
+                targets,
+                params.name,
+                params.arguments or {},
+            )
+        except (MCPToolNotFoundError, MCPToolArgumentError, MCPToolExecutionError) as exc:
+            return _error(exc)
+        return _result(value)
+
+    return Server(
+        name,
+        version=version,
+        on_list_tools=list_tools,
+        on_call_tool=call_tool,
+    )
+
+
+def streamable_http_app(
+    server: Server[Any],
+    *,
+    host: str = "127.0.0.1",
+    json_response: bool = True,
+    stateless_http: bool = True,
+):
+    """Build the SDK Streamable HTTP ASGI app for an MCP server."""
+    return server.streamable_http_app(
+        host=host,
+        json_response=json_response,
+        stateless_http=stateless_http,
+    )
+
+
+__all__ = ["Authorizer", "build_mcp_server", "streamable_http_app"]
