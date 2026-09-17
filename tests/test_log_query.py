@@ -34,10 +34,10 @@ def test_log_source_keeps_legacy_store_default(
     assert log_source() == legacy
 
 
-def test_logs_command_declares_semantic_source_sigil():
-    source = inspect.signature(commands.logs).parameters["source"]
-
-    assert source.default == "[logs.source]"
+def test_log_commands_declare_semantic_source_sigil():
+    for command in (commands.list_runs, commands.get_run, commands.get_events, commands.logs):
+        source = inspect.signature(command).parameters["source"]
+        assert source.default == "[logs.source]"
 
 
 def test_log_query_is_bounded_and_cursor_based(tmp_path: Path):
@@ -68,25 +68,58 @@ def test_log_query_rejects_unbounded_limits(tmp_path: Path):
         list_log_runs(tmp_path, limit=1001)
 
 
-def test_logs_command_lists_runs_instead_of_starting_service(tmp_path: Path):
+def test_list_runs_command_returns_recent_runs(tmp_path: Path):
     root = tmp_path / "runs"
     _write_run(root, "run-1", [{"message": "hello"}])
 
-    result = commands.logs(source=str(root))
+    result = commands.list_runs(source=str(root))
 
     assert [item["run_id"] for item in result["runs"]] == ["run-1"]
 
 
-def test_logs_command_reads_one_run_incrementally(tmp_path: Path):
+def test_get_run_command_returns_one_run_metadata(tmp_path: Path):
+    root = tmp_path / "runs"
+    _write_run(root, "run-1", [{"message": "hello"}])
+
+    result = commands.get_run("run-1", source=str(root))
+
+    assert result["run_id"] == "run-1"
+    assert int(result["bytes"]) > 0
+    assert float(result["modified"]) > 0
+
+
+def test_get_run_command_rejects_unknown_run(tmp_path: Path):
+    with pytest.raises(KeyError, match="unknown run"):
+        commands.get_run("missing", source=str(tmp_path))
+
+
+def test_get_events_command_reads_one_run_incrementally(tmp_path: Path):
     root = tmp_path / "runs"
     events = [{"message": "first"}, {"message": "second"}]
     _write_run(root, "run-1", events)
 
-    first = commands.logs("run-1", source=str(root), limit=1)
-    second = commands.logs("run-1", source=str(root), after=int(first["next_cursor"]), limit=1)
+    first = commands.get_events("run-1", source=str(root), limit=1)
+    second = commands.get_events(
+        "run-1",
+        source=str(root),
+        after=int(first["next_cursor"]),
+        limit=1,
+    )
 
     assert first["events"] == events[:1]
     assert second["events"] == events[1:]
+
+
+def test_logs_command_remains_compatible(tmp_path: Path):
+    root = tmp_path / "runs"
+    events = [{"message": "first"}, {"message": "second"}]
+    _write_run(root, "run-1", events)
+
+    listed = commands.logs(source=str(root))
+    page = commands.logs("run-1", source=str(root), limit=1)
+
+    assert [item["run_id"] for item in listed["runs"]] == ["run-1"]
+    assert page["events"] == events[:1]
 
 
 def test_logs_command_requires_run_for_after(tmp_path: Path):
