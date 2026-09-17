@@ -18,3 +18,8 @@ restart = "on-failure"
 description = "GWAY Web authenticated single-call API"
 command = ["{python}", "-m", "gway_web.api_service"]
 restart = "on-failure"
+
+[services.mcp]
+description = "GWAY Web authenticated MCP service"
+command = ["{python}", "-m", "gway_web.mcp_service"]
+restart = "on-failure"
