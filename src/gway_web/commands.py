@@ -304,6 +304,38 @@ def token(
     return issue_token(name=name, scopes=scope, ttl=ttl)
 
 
+def list_runs(
+    *,
+    source: str = "[logs.source]",
+    limit: int = 100,
+) -> dict[str, object]:
+    """List recent GWAY log runs from the resolved log source."""
+    return {"runs": list_log_runs(source, limit=limit)}
+
+
+def get_run(
+    run: str,
+    *,
+    source: str = "[logs.source]",
+) -> dict[str, object]:
+    """Return metadata for one GWAY log run."""
+    for item in list_log_runs(source, limit=1000):
+        if item.get("run_id") == run:
+            return item
+    raise KeyError(f"unknown run: {run}")
+
+
+def get_events(
+    run: str,
+    *,
+    source: str = "[logs.source]",
+    after: int | None = None,
+    limit: int = 100,
+) -> dict[str, object]:
+    """Read one bounded cursor page of events from a GWAY log run."""
+    return read_log_events(run, source, after=after, limit=limit)
+
+
 def logs(
     run: str | None = None,
     *,
@@ -311,12 +343,12 @@ def logs(
     after: int | None = None,
     limit: int = 100,
 ) -> dict[str, object]:
-    """List GWAY log runs or read a bounded page of events from one run."""
+    """Compatibility wrapper for the explicit read-only log commands."""
     if run is None:
         if after is not None:
             raise ValueError("--after requires a run id")
-        return {"runs": list_log_runs(source, limit=limit)}
-    return read_log_events(run, source, after=after, limit=limit)
+        return list_runs(source=source, limit=limit)
+    return get_events(run, source=source, after=after, limit=limit)
 
 
 def _public_check(target: Site, timeout: float) -> tuple[bool, str]:
