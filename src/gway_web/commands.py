@@ -307,7 +307,7 @@ def token(
 def logs(
     run: str | None = None,
     *,
-    source: str | None = None,
+    source: str = "[logs.source]",
     after: int | None = None,
     limit: int = 100,
 ) -> dict[str, object]:
