@@ -7,32 +7,23 @@ in GWAY's generic service manager and ``gway_web.log_service``.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from .logs import default_log_root, list_runs, read_run
 
-_SEMANTIC_SOURCE_ENV = "GWAY_LOGS_SOURCE"
-_LEGACY_SOURCE_ENV = "GWAY_LOG_DIR"
 _DEFAULT_LIMIT = 100
 _MAX_LIMIT = 1000
 
 
 def log_source(source: str | Path | None = None) -> Path:
-    """Resolve the log source using the semantic GWAY environment convention.
+    """Return an explicit log source or the legacy log-store default.
 
-    ``logs.source`` maps to ``GWAY_LOGS_SOURCE`` according to GWAY issue #938.
-    ``GWAY_LOG_DIR`` remains a compatibility fallback while existing producers
-    migrate to semantic variable resolution.
+    Semantic configuration such as ``logs.source`` is resolved by GWAY before
+    calling this module. The underlying log store retains its existing default
+    behavior for direct/internal callers and legacy producers.
     """
     if source is not None:
         return Path(source).expanduser()
-    configured = os.environ.get(_SEMANTIC_SOURCE_ENV)
-    if configured:
-        return Path(configured).expanduser()
-    legacy = os.environ.get(_LEGACY_SOURCE_ENV)
-    if legacy:
-        return Path(legacy).expanduser()
     return default_log_root()
 
 
