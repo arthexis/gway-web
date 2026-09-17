@@ -1,12 +1,21 @@
 from __future__ import annotations
 
-from .log_query import log_source
+import argparse
+from collections.abc import Sequence
+
 from .logs import serve_logs
 
 
-def main() -> None:
-    """Run the authenticated log service on its loopback default."""
-    serve_logs(source=log_source())
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Serve the authenticated GWAY log store")
+    parser.add_argument("--source", required=True, help="resolved GWAY log-store root")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Run the authenticated log service using an already-resolved source."""
+    arguments = _parser().parse_args(argv)
+    serve_logs(source=arguments.source)
 
 
 if __name__ == "__main__":
