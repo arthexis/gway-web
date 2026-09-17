@@ -17,9 +17,10 @@ from mcp.types import (
     Tool,
 )
 
-from .api_config import APIConfig
+from .api_config import APIConfig, read_api_config
+from .api_discovery import DiscoveryDispatcherLike, discover_project
 from .api_dispatch import DispatcherLike
-from .mcp_config import MCPConfig
+from .mcp_config import MCPConfig, read_mcp_config
 from .mcp_dispatch import (
     MCPToolArgumentError,
     MCPToolError,
@@ -29,6 +30,7 @@ from .mcp_dispatch import (
     dispatch_mcp_tool,
     targets_from_tools,
 )
+from .mcp_schema import tools_from_discovery
 
 Authorizer = Callable[[ServerRequestContext[Any], MCPToolTarget | None], bool | Awaitable[bool]]
 
@@ -136,6 +138,51 @@ def build_mcp_server(
     )
 
 
+def build_configured_mcp_server(
+    dispatcher: DiscoveryDispatcherLike,
+    *,
+    api_policy: APIConfig | None = None,
+    mcp_policy: MCPConfig | None = None,
+    authorizer: Authorizer | None = None,
+    name: str = "gway-web",
+    version: str = "0.1.0",
+) -> Server[Any]:
+    """Load persisted policy and build the deployable MCP server.
+
+    Explicit policy objects remain injectable for tests and embedded callers.
+    When omitted, startup reads the normal dedicated API and MCP policy files.
+    Missing policy files retain each layer's deny-by-default behavior.
+    """
+    selected_api = read_api_config() if api_policy is None else api_policy
+    selected_mcp = read_mcp_config() if mcp_policy is None else mcp_policy
+
+    tools: list[dict[str, object]] = []
+    names: set[str] = set()
+    for project in selected_mcp.projects:
+        discovery = discover_project(dispatcher, selected_api, project.name)
+        for tool in tools_from_discovery(
+            discovery,
+            api_policy=selected_api,
+            mcp_policy=selected_mcp,
+        ):
+            tool_name = str(tool["name"])
+            if tool_name in names:
+                raise ValueError(f"duplicate MCP tool name: {tool_name}")
+            names.add(tool_name)
+            tools.append(tool)
+    tools.sort(key=lambda item: str(item["name"]))
+
+    return build_mcp_server(
+        dispatcher,
+        selected_api,
+        selected_mcp,
+        tools,
+        authorizer=authorizer,
+        name=name,
+        version=version,
+    )
+
+
 def streamable_http_app(
     server: Server[Any],
     *,
@@ -151,4 +198,9 @@ def streamable_http_app(
     )
 
 
-__all__ = ["Authorizer", "build_mcp_server", "streamable_http_app"]
+__all__ = [
+    "Authorizer",
+    "build_configured_mcp_server",
+    "build_mcp_server",
+    "streamable_http_app",
+]
