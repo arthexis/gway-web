@@ -2,10 +2,27 @@
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib
 
 from .api_config import APIConfig, _command_path, _project_key
+
+ENV_MCP_CONFIG = "GWAY_WEB_MCP_CONFIG"
+DEFAULT_MCP_CONFIG = Path("~/.config/gway/mcp.toml").expanduser()
+
+
+def mcp_config_path() -> Path:
+    """Return the dedicated MCP exposure-policy path."""
+    return Path(os.environ.get(ENV_MCP_CONFIG, DEFAULT_MCP_CONFIG)).expanduser()
 
 
 @dataclass(frozen=True)
@@ -71,4 +88,83 @@ class MCPConfig:
         return ()
 
 
-__all__ = ["MCPConfig", "MCPProjectExposure"]
+def read_mcp_config(path: str | Path | None = None) -> MCPConfig:
+    """Read the dedicated MCP exposure policy, denying everything when absent."""
+    target = Path(path).expanduser() if path is not None else mcp_config_path()
+    if not target.exists():
+        if path is None:
+            return MCPConfig()
+        raise FileNotFoundError(target)
+
+    with target.open("rb") as stream:
+        data = tomllib.load(stream)
+
+    raw_mcp = data.get("mcp")
+    if raw_mcp is None:
+        return MCPConfig()
+    if not isinstance(raw_mcp, dict):
+        raise TypeError("mcp must be a TOML table")
+
+    raw_projects = raw_mcp.get("projects", {})
+    if not isinstance(raw_projects, dict):
+        raise TypeError("mcp.projects must be a TOML table")
+
+    projects: list[MCPProjectExposure] = []
+    for name, values in raw_projects.items():
+        if not isinstance(values, dict):
+            raise TypeError(f"mcp project {name!r} must be a TOML table")
+        raw_functions = values.get("functions", [])
+        if not isinstance(raw_functions, list) or not all(
+            isinstance(value, str) and value.strip() for value in raw_functions
+        ):
+            raise TypeError(f"mcp project {name!r} functions must be an array of strings")
+        projects.append(
+            MCPProjectExposure(
+                name=name,
+                functions=frozenset(_command_path(value) for value in raw_functions),
+            )
+        )
+
+    return MCPConfig(projects=tuple(projects))
+
+
+def write_mcp_config(config: MCPConfig, path: str | Path | None = None) -> Path:
+    """Atomically replace the dedicated MCP exposure policy file."""
+    target = Path(path).expanduser() if path is not None else mcp_config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["[mcp]", ""]
+    for project in sorted(config.projects, key=lambda item: item.name):
+        lines.append(f"[mcp.projects.{json.dumps(project.name)}]")
+        functions = ["/".join(path) for path in sorted(project.functions)]
+        lines.append("functions = [" + ", ".join(json.dumps(value) for value in functions) + "]")
+        lines.append("")
+
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write("\n".join(lines))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        target.chmod(0o600)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
+        raise
+    return target
+
+
+__all__ = [
+    "DEFAULT_MCP_CONFIG",
+    "ENV_MCP_CONFIG",
+    "MCPConfig",
+    "MCPProjectExposure",
+    "mcp_config_path",
+    "read_mcp_config",
+    "write_mcp_config",
+]
