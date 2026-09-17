@@ -12,7 +12,7 @@ from .api_routing import APIRequest
 from .mcp_config import MCPConfig
 
 _MAX_ARGUMENTS = 64
-_MAX_RESULT_BYTES = 256 * 1024
+MAX_MCP_RESPONSE_BYTES = 256 * 1024
 
 
 class MCPToolError(RuntimeError):
@@ -87,11 +87,12 @@ def _arguments(values: Mapping[str, object] | None) -> dict[str, str]:
 
 
 def _bounded_result(value: object) -> object:
+    """Reject obviously oversized values before constructing the protocol response."""
     try:
         payload = json.dumps(value, default=str, allow_nan=False, separators=(",", ":"))
     except (TypeError, ValueError, OverflowError) as exc:
         raise MCPToolExecutionError("tool returned an unsupported result") from exc
-    if len(payload.encode("utf-8")) > _MAX_RESULT_BYTES:
+    if len(payload.encode("utf-8")) > MAX_MCP_RESPONSE_BYTES:
         raise MCPToolExecutionError("tool result exceeds MCP response limit")
     return value
 
@@ -130,6 +131,7 @@ def dispatch_mcp_tool(
 
 
 __all__ = [
+    "MAX_MCP_RESPONSE_BYTES",
     "MCPToolArgumentError",
     "MCPToolError",
     "MCPToolExecutionError",
