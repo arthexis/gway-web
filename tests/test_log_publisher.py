@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from gway_web import commands
 from gway_web.log_publisher import WebLogPublisherProvider
 from gway_web.log_publisher_state import publisher_store_path
 from gway_web.tokens import revoke_token
@@ -283,3 +284,36 @@ def test_web_log_publisher_state_is_scoped_by_consumer_and_destination(
         arthexis.metadata["token_id"],
         local.metadata["token_id"],
     } == {"token-1", "token-2", "token-3"}
+
+
+def test_log_publisher_command_reuses_provider_owned_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stores(tmp_path, monkeypatch)
+
+    first = commands.log_publisher(
+        destination="https://logs.example.test",
+        consumer="wire",
+    )
+    second = commands.log_publisher(
+        destination="https://logs.example.test",
+        consumer="wire",
+    )
+
+    assert second == first
+    assert first["provider"] == "web"
+    assert first["configuration"] == {
+        "transport": "http",
+        "url_template": "https://logs.example.test/api/logs/{run_id}/events",
+        "method": "POST",
+        "headers": {
+            "Authorization": "Bearer {GWAY_WEB_LOG_TOKEN}",
+            "Content-Type": "application/x-ndjson",
+        },
+    }
+    environment = first["environment"]
+    assert isinstance(environment, dict)
+    token = environment["GWAY_WEB_LOG_TOKEN"]
+    assert isinstance(token, str)
+    assert token.startswith("gweb_v1_")

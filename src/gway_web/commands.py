@@ -17,6 +17,7 @@ from .certbot import renew as certbot_renew
 from .config import read_sites, write_sites
 from .health import health as probe_health
 from .health import status as probe_reachability
+from .log_publisher import WebLogPublisherProvider
 from .log_query import get_log_run, list_log_runs, read_log_events
 from .mcp_commands import mcp
 from .nginx import disable as nginx_disable
@@ -303,6 +304,29 @@ def token(
     if selected is not None:
         raise ValueError("token id is only valid with --revoke")
     return issue_token(name=name, scopes=scope, ttl=ttl)
+
+
+def log_publisher(
+    *,
+    destination: str,
+    consumer: str,
+    service_project: str | None = None,
+    service: str | None = None,
+) -> dict[str, object]:
+    """Provision the Web log publisher binding consumed by GWAY core."""
+    if (service_project is None) != (service is None):
+        raise ValueError("--service-project and --service must be provided together")
+    service_ref = (
+        {"project": service_project, "service": service}
+        if service_project is not None and service is not None
+        else None
+    )
+    binding = WebLogPublisherProvider().provision(
+        destination=destination,
+        consumer=consumer,
+        service=service_ref,
+    )
+    return binding.to_record()
 
 
 def list_runs(
