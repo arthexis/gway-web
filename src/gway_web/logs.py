@@ -9,6 +9,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from .log_protocol import (
+    LOG_EVENTS_PREFIX,
+    LOG_EVENTS_SUFFIX,
+    LOG_INGEST_SCOPE,
+    LOG_NDJSON_CONTENT_TYPE,
+    LOG_READ_SCOPE,
+    LOG_RUNS_PATH,
+)
 from .tokens import verify_token
 
 _LOG_DIR_ENV = "GWAY_LOG_DIR"
@@ -170,7 +178,10 @@ class LogRequestHandler(BaseHTTPRequestHandler):
         path = _event_path(run_id, self.log_source)
         size = path.stat().st_size
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header(
+            "Content-Type",
+            f"{LOG_NDJSON_CONTENT_TYPE}; charset=utf-8",
+        )
         self.send_header("Content-Length", str(size))
         self.end_headers()
         with path.open("rb") as stream:
@@ -183,14 +194,17 @@ class LogRequestHandler(BaseHTTPRequestHandler):
         if path == "/health":
             self._json(HTTPStatus.OK, {"ok": True, "source": str(self.log_source)})
             return
-        if not self._authorized("logs:read"):
-            self._json(HTTPStatus.UNAUTHORIZED, {"error": "valid logs:read bearer token required"})
+        if not self._authorized(LOG_READ_SCOPE):
+            self._json(
+                HTTPStatus.UNAUTHORIZED,
+                {"error": f"valid {LOG_READ_SCOPE} bearer token required"},
+            )
             return
-        if path == "/api/logs/runs":
+        if path == LOG_RUNS_PATH:
             self._json(HTTPStatus.OK, {"runs": list_runs(self.log_source)})
             return
-        prefix = "/api/logs/"
-        suffix = "/events"
+        prefix = LOG_EVENTS_PREFIX
+        suffix = LOG_EVENTS_SUFFIX
         if path.startswith(prefix) and path.endswith(suffix):
             run_id = unquote(path[len(prefix) : -len(suffix)]).strip("/")
             try:
@@ -203,17 +217,23 @@ class LogRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
         """Append authenticated NDJSON events to one run."""
         path = urlparse(self.path).path
-        prefix = "/api/logs/"
-        suffix = "/events"
+        prefix = LOG_EVENTS_PREFIX
+        suffix = LOG_EVENTS_SUFFIX
         if not (path.startswith(prefix) and path.endswith(suffix)):
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
-        if not self._authorized("logs:ingest"):
-            self._json(HTTPStatus.UNAUTHORIZED, {"error": "valid logs:ingest bearer token required"})
+        if not self._authorized(LOG_INGEST_SCOPE):
+            self._json(
+                HTTPStatus.UNAUTHORIZED,
+                {"error": f"valid {LOG_INGEST_SCOPE} bearer token required"},
+            )
             return
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-        if content_type != "application/x-ndjson":
-            self._json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "application/x-ndjson required"})
+        if content_type != LOG_NDJSON_CONTENT_TYPE:
+            self._json(
+                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                {"error": f"{LOG_NDJSON_CONTENT_TYPE} required"},
+            )
             return
         try:
             length = int(self.headers.get("Content-Length", ""))

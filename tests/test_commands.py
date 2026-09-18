@@ -24,6 +24,7 @@ def test_gway_command_surface_is_compact():
         "get_events",
         "get_run",
         "list_runs",
+        "log_publisher",
         "logs",
         "reload",
         "serve",
@@ -136,3 +137,116 @@ def test_public_check_uses_configured_health_path(monkeypatch: pytest.MonkeyPatc
         "url": "https://register.example.com/health",
         "timeout": 3.0,
     }
+
+
+def test_log_publisher_command_delegates_to_web_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class Binding:
+        @staticmethod
+        def to_record() -> dict[str, object]:
+            return {
+                "provider": "web",
+                "destination": "https://logs.example.test",
+                "configuration": {"transport": "http"},
+                "environment": {"GWAY_WEB_LOG_TOKEN": "secret"},
+                "metadata": {"token_id": "token-1"},
+            }
+
+    class Provider:
+        def provision(self, **kwargs):
+            calls.append(kwargs)
+            return Binding()
+
+    monkeypatch.setattr(commands, "WebLogPublisherProvider", Provider)
+
+    result = commands.log_publisher(
+        destination="https://logs.example.test",
+        consumer="wire",
+        service_project="wire",
+        service="worker",
+    )
+
+    assert calls == [
+        {
+            "destination": "https://logs.example.test",
+            "consumer": "wire",
+        }
+    ]
+    assert result["provider"] == "web"
+    assert result["environment"] == {"GWAY_WEB_LOG_TOKEN": "secret"}
+
+
+@pytest.mark.parametrize(
+    ("service_project", "service"),
+    [("wire", None), (None, "worker")],
+)
+def test_log_publisher_command_requires_complete_service_reference(
+    service_project: str | None,
+    service: str | None,
+) -> None:
+    with pytest.raises(ValueError, match="provided together"):
+        commands.log_publisher(
+            destination="https://logs.example.test",
+            consumer="wire",
+            service_project=service_project,
+            service=service,
+        )
+
+
+def test_log_publisher_command_service_name_does_not_affect_provider_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class Binding:
+        @staticmethod
+        def to_record() -> dict[str, object]:
+            return {
+                "provider": "web",
+                "destination": "https://logs.example.test",
+                "configuration": {},
+                "environment": {},
+                "metadata": {},
+            }
+
+    class Provider:
+        def provision(self, **kwargs):
+            calls.append(kwargs)
+            return Binding()
+
+    monkeypatch.setattr(commands, "WebLogPublisherProvider", Provider)
+
+    commands.log_publisher(
+        destination="https://logs.example.test",
+        consumer="wire",
+    )
+    commands.log_publisher(
+        destination="https://logs.example.test",
+        consumer="wire",
+        service_project="web",
+        service="logs",
+    )
+    commands.log_publisher(
+        destination="https://logs.example.test",
+        consumer="wire",
+        service_project="web",
+        service="telemetry",
+    )
+
+    assert calls == [
+        {
+            "destination": "https://logs.example.test",
+            "consumer": "wire",
+        },
+        {
+            "destination": "https://logs.example.test",
+            "consumer": "wire",
+        },
+        {
+            "destination": "https://logs.example.test",
+            "consumer": "wire",
+        },
+    ]
