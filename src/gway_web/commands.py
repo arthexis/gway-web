@@ -316,15 +316,12 @@ def log_publisher(
     """Provision the Web log publisher binding consumed by GWAY core."""
     if (service_project is None) != (service is None):
         raise ValueError("--service-project and --service must be provided together")
-    service_ref = (
-        {"project": service_project, "service": service}
-        if service_project is not None and service is not None
-        else None
-    )
+    # Service identity is transport metadata from GWAY's generic provider
+    # protocol, not part of Web's logging-provider semantics. Accept the paired
+    # flags for command compatibility, but lifecycle remains owned by GWAY core.
     binding = WebLogPublisherProvider().provision(
         destination=destination,
         consumer=consumer,
-        service=service_ref,
     )
     return binding.to_record()
 

@@ -155,11 +155,8 @@ class WebLogPublisherProvider:
         *,
         destination: str,
         consumer: str,
-        service: object | None = None,
-        current: object | None = None,
     ) -> WebPublisherBinding:
         """Reuse a valid provider-owned binding or rotate it when invalid."""
-        del service, current
         destination = self._destination(destination)
         key = self._record_key(consumer, destination)
         with publisher_store_lock():

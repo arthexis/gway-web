@@ -173,7 +173,6 @@ def test_log_publisher_command_delegates_to_web_provider(
         {
             "destination": "https://logs.example.test",
             "consumer": "wire",
-            "service": {"project": "wire", "service": "worker"},
         }
     ]
     assert result["provider"] == "web"
@@ -195,3 +194,59 @@ def test_log_publisher_command_requires_complete_service_reference(
             service_project=service_project,
             service=service,
         )
+
+
+def test_log_publisher_command_service_name_does_not_affect_provider_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class Binding:
+        @staticmethod
+        def to_record() -> dict[str, object]:
+            return {
+                "provider": "web",
+                "destination": "https://logs.example.test",
+                "configuration": {},
+                "environment": {},
+                "metadata": {},
+            }
+
+    class Provider:
+        def provision(self, **kwargs):
+            calls.append(kwargs)
+            return Binding()
+
+    monkeypatch.setattr(commands, "WebLogPublisherProvider", Provider)
+
+    commands.log_publisher(
+        destination="https://logs.example.test",
+        consumer="wire",
+    )
+    commands.log_publisher(
+        destination="https://logs.example.test",
+        consumer="wire",
+        service_project="web",
+        service="logs",
+    )
+    commands.log_publisher(
+        destination="https://logs.example.test",
+        consumer="wire",
+        service_project="web",
+        service="telemetry",
+    )
+
+    assert calls == [
+        {
+            "destination": "https://logs.example.test",
+            "consumer": "wire",
+        },
+        {
+            "destination": "https://logs.example.test",
+            "consumer": "wire",
+        },
+        {
+            "destination": "https://logs.example.test",
+            "consumer": "wire",
+        },
+    ]
