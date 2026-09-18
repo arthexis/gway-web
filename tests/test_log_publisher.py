@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from gway_web import commands
+from gway_web.log_protocol import LOG_INGEST_SCOPE, publisher_configuration
 from gway_web.log_publisher import WebLogPublisherProvider
 from gway_web.log_publisher_state import publisher_store_path
 from gway_web.tokens import revoke_token
@@ -317,3 +318,26 @@ def test_log_publisher_command_reuses_provider_owned_binding(
     token = environment["GWAY_WEB_LOG_TOKEN"]
     assert isinstance(token, str)
     assert token.startswith("gweb_v1_")
+
+
+def test_web_publisher_uses_web_owned_protocol_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stores(tmp_path, monkeypatch)
+    provider = WebLogPublisherProvider(
+        credential_issuer=lambda **_kwargs: {
+            "token": "fixture-value",
+            "token_id": "fixture-id",
+        },
+        credential_verifier=lambda _token, *, scope=None: scope == LOG_INGEST_SCOPE,
+    )
+
+    binding = provider.provision(
+        destination="https://logs.example.test",
+        consumer="wire",
+    )
+
+    assert binding.configuration == publisher_configuration(
+        "https://logs.example.test"
+    )

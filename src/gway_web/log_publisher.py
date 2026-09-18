@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
+from .log_protocol import LOG_INGEST_SCOPE, publisher_configuration
 from .log_publisher_state import (
     publisher_store_lock,
     read_publisher_store,
@@ -121,12 +122,12 @@ class WebLogPublisherProvider:
             return False
         if not isinstance(token_id, str) or not token_id:
             return False
-        return self._credential_verifier(token, scope="logs:ingest")
+        return self._credential_verifier(token, scope=LOG_INGEST_SCOPE)
 
     def _new_binding(self, *, destination: str, consumer: str) -> WebPublisherBinding:
         credential = self._credential_issuer(
             name=f"gway-consumer:{consumer}",
-            scopes="logs:ingest",
+            scopes=LOG_INGEST_SCOPE,
         )
         token = credential.get("token")
         token_id = credential.get("token_id")
@@ -137,15 +138,7 @@ class WebLogPublisherProvider:
         return WebPublisherBinding(
             provider=self.name,
             destination=destination,
-            configuration={
-                "transport": "http",
-                "url_template": f"{destination}/api/logs/{{run_id}}/events",
-                "method": "POST",
-                "headers": {
-                    "Authorization": "Bearer {GWAY_WEB_LOG_TOKEN}",
-                    "Content-Type": "application/x-ndjson",
-                },
-            },
+            configuration=publisher_configuration(destination),
             environment={"GWAY_WEB_LOG_TOKEN": token},
             metadata={"token_id": token_id},
         )
