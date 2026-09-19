@@ -42,6 +42,11 @@ class _Dispatcher:
         }
 
 
+@pytest.fixture(autouse=True)
+def _isolated_token_store(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("GWAY_WEB_TOKEN_STORE", str(tmp_path / "tokens.json"))
+
+
 @contextmanager
 def _running_server(policy):
     server = create_api_server(_Dispatcher(), policy, host="127.0.0.1", port=0)
@@ -70,8 +75,7 @@ def _get(server, target: str, *, token: str | None = None):
     return response.status, body, headers
 
 
-def test_repo_routes_require_project_scoped_bearer_token(tmp_path, monkeypatch):
-    monkeypatch.setenv("GWAY_WEB_TOKEN_STORE", str(tmp_path / "tokens.json"))
+def test_repo_routes_require_project_scoped_bearer_token():
     policy = APIConfig(
         base_domain="gway.test",
         projects=(
@@ -99,8 +103,7 @@ def test_repo_routes_require_project_scoped_bearer_token(tmp_path, monkeypatch):
     assert ok["result"]["issue"] == "1"
 
 
-def test_provision_token_is_idempotent_and_never_returns_secret(tmp_path, monkeypatch):
-    monkeypatch.setenv("GWAY_WEB_TOKEN_STORE", str(tmp_path / "tokens.json"))
+def test_provision_token_is_idempotent_and_never_returns_secret():
     issued = issue_token(scopes="repo:read")
     token = str(issued["token"])
     first = provision_token(token, name="repo-api", scopes="repo:read")
@@ -111,9 +114,7 @@ def test_provision_token_is_idempotent_and_never_returns_secret(tmp_path, monkey
     assert verify_token(token, scope="repo:read")
 
 
-def test_provision_token_rejects_low_entropy_external_secret(tmp_path, monkeypatch):
-    monkeypatch.setenv("GWAY_WEB_TOKEN_STORE", str(tmp_path / "tokens.json"))
-
+def test_provision_token_rejects_low_entropy_external_secret():
     with pytest.raises(ValueError, match="high-entropy"):
         provision_token("gweb_v1_abcdef123456_guessme", scopes="repo:read")
 
