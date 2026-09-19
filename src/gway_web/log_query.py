@@ -1,7 +1,7 @@
-"""Read-only queries over the GWAY Web log store.
+"""Read-only queries over the local GWAY log store.
 
-The public command and future MCP adapter use this module; service lifecycle stays
-in GWAY's generic service manager and ``gway_web.log_service``.
+The public command and MCP adapter use this module without depending on a
+dedicated Web log service.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import heapq
 import json
 from pathlib import Path
 
-from .logs import _event_path, default_log_root
+from .log_store import default_log_root, event_path
 
 _DEFAULT_LIMIT = 100
 _MAX_LIMIT = 1000
@@ -36,7 +36,7 @@ def _bounded_limit(limit: int) -> int:
 
 def _run_metadata(run_id: str, source: str | Path | None = None) -> dict[str, object]:
     """Return metadata for one exact run without scanning the run store."""
-    path = _event_path(run_id, log_source(source))
+    path = event_path(run_id, log_source(source))
     stat = path.stat()
     return {
         "run_id": run_id,
@@ -103,7 +103,7 @@ def read_log_events(
     if cursor < 0:
         raise ValueError("after must be zero or greater")
 
-    path = _event_path(run_id, log_source(source))
+    path = event_path(run_id, log_source(source))
     page: list[tuple[int, str]] = []
     consumed = 0
     with path.open("r", encoding="utf-8") as stream:
