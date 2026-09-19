@@ -18,16 +18,19 @@ def _site(name: str, domain: str, *, tls: bool = False) -> Site:
     )
 
 
-def test_ensure_preserves_existing_logical_name(tmp_path, monkeypatch) -> None:
-    config = tmp_path / "web.toml"
-    monkeypatch.setenv("GWAY_WEB_CONFIG", str(config))
+@pytest.fixture(autouse=True)
+def _isolated_site_config(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("GWAY_WEB_CONFIG", str(tmp_path / "web.toml"))
+
+
+def _fake_ensure(**kwargs):
+    write_sites([_site(kwargs["fqdn"], kwargs["fqdn"], tls=True)])
+    return {"success": True, "fqdn": kwargs["fqdn"]}
+
+
+def test_ensure_preserves_existing_logical_name(monkeypatch) -> None:
     write_sites([_site("arthexis", "arthexis.com")])
-
-    def _ensure(**kwargs):
-        write_sites([_site(kwargs["fqdn"], kwargs["fqdn"], tls=True)])
-        return {"success": True, "fqdn": kwargs["fqdn"]}
-
-    monkeypatch.setattr(exposure_api.exposure, "ensure", _ensure)
+    monkeypatch.setattr(exposure_api.exposure, "ensure", _fake_ensure)
 
     result = exposure_api.ensure(
         fqdn="arthexis.com",
@@ -36,21 +39,11 @@ def test_ensure_preserves_existing_logical_name(tmp_path, monkeypatch) -> None:
 
     assert result["success"] is True
     configured = read_sites()
-    assert len(configured) == 1
-    assert configured[0].name == "arthexis"
-    assert configured[0].domain == "arthexis.com"
-    assert configured[0].tls is True
+    assert configured == [_site("arthexis", "arthexis.com", tls=True)]
 
 
-def test_ensure_uses_fqdn_name_for_new_domain(tmp_path, monkeypatch) -> None:
-    config = tmp_path / "web.toml"
-    monkeypatch.setenv("GWAY_WEB_CONFIG", str(config))
-
-    def _ensure(**kwargs):
-        write_sites([_site(kwargs["fqdn"], kwargs["fqdn"], tls=True)])
-        return {"success": True, "fqdn": kwargs["fqdn"]}
-
-    monkeypatch.setattr(exposure_api.exposure, "ensure", _ensure)
+def test_ensure_uses_fqdn_name_for_new_domain(monkeypatch) -> None:
+    monkeypatch.setattr(exposure_api.exposure, "ensure", _fake_ensure)
 
     exposure_api.ensure(
         fqdn="repo.example.com",
@@ -60,72 +53,56 @@ def test_ensure_uses_fqdn_name_for_new_domain(tmp_path, monkeypatch) -> None:
     assert read_sites()[0].name == "repo.example.com"
 
 
-def test_ensure_rejects_unrelated_fqdn_name_collision(tmp_path, monkeypatch) -> None:
-    config = tmp_path / "web.toml"
-    monkeypatch.setenv("GWAY_WEB_CONFIG", str(config))
-    write_sites(
-        [
-            _site("arthexis", "arthexis.com"),
-            _site("arthexis.com", "admin.example.com"),
-        ]
-    )
-    before = read_sites()
-    called = False
-
-    def _ensure(**kwargs):
-        nonlocal called
-        called = True
-        return {"success": True, "fqdn": kwargs["fqdn"]}
-
-    monkeypatch.setattr(exposure_api.exposure, "ensure", _ensure)
-
-    with pytest.raises(ValueError, match="site name is already used"):
-        exposure_api.ensure(
-            fqdn="arthexis.com",
-            upstream="http://127.0.0.1:8888",
-        )
-
-    assert called is False
-    assert read_sites() == before
-
-
-def test_ensure_rejects_new_domain_with_existing_logical_name(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("configured", "fqdn", "upstream"),
+    [
+        (
+            [
+                _site("arthexis", "arthexis.com"),
+                _site("arthexis.com", "admin.example.com"),
+            ],
+            "arthexis.com",
+            "http://127.0.0.1:8888",
+        ),
+        (
+            [_site("repo.example.com", "admin.example.com")],
+            "repo.example.com",
+            "http://127.0.0.1:8050",
+        ),
+    ],
+)
+def test_ensure_rejects_site_name_collisions(
+    configured,
+    fqdn: str,
+    upstream: str,
+    monkeypatch,
 ) -> None:
-    config = tmp_path / "web.toml"
-    monkeypatch.setenv("GWAY_WEB_CONFIG", str(config))
-    write_sites([_site("repo.example.com", "admin.example.com")])
+    write_sites(configured)
     before = read_sites()
     called = False
 
-    def _ensure(**kwargs):
+    def fake_ensure(**kwargs):
         nonlocal called
         called = True
         return {"success": True, "fqdn": kwargs["fqdn"]}
 
-    monkeypatch.setattr(exposure_api.exposure, "ensure", _ensure)
+    monkeypatch.setattr(exposure_api.exposure, "ensure", fake_ensure)
 
     with pytest.raises(ValueError, match="site name is already used"):
-        exposure_api.ensure(
-            fqdn="repo.example.com",
-            upstream="http://127.0.0.1:8050",
-        )
+        exposure_api.ensure(fqdn=fqdn, upstream=upstream)
 
     assert called is False
     assert read_sites() == before
 
 
-def test_failed_release_restores_logical_name(tmp_path, monkeypatch) -> None:
-    config = tmp_path / "web.toml"
-    monkeypatch.setenv("GWAY_WEB_CONFIG", str(config))
+def test_failed_release_restores_logical_name(monkeypatch) -> None:
     write_sites([_site("arthexis", "arthexis.com", tls=True)])
 
-    def _release(**kwargs):
-        configured = read_sites()
-        assert configured[0].name == "arthexis.com"
+    def fake_release(**kwargs):
+        assert read_sites()[0].name == "arthexis.com"
         return {"fqdn": kwargs["fqdn"], "released": False, "stage": "nginx"}
 
-    monkeypatch.setattr(exposure_api.exposure, "release", _release)
+    monkeypatch.setattr(exposure_api.exposure, "release", fake_release)
 
     result = exposure_api.release(fqdn="arthexis.com")
 
@@ -133,9 +110,7 @@ def test_failed_release_restores_logical_name(tmp_path, monkeypatch) -> None:
     assert read_sites()[0].name == "arthexis"
 
 
-def test_release_rejects_unrelated_fqdn_name_collision(tmp_path, monkeypatch) -> None:
-    config = tmp_path / "web.toml"
-    monkeypatch.setenv("GWAY_WEB_CONFIG", str(config))
+def test_release_rejects_unrelated_fqdn_name_collision(monkeypatch) -> None:
     write_sites(
         [
             _site("arthexis", "arthexis.com", tls=True),
@@ -145,12 +120,12 @@ def test_release_rejects_unrelated_fqdn_name_collision(tmp_path, monkeypatch) ->
     before = read_sites()
     called = False
 
-    def _release(**kwargs):
+    def fake_release(**kwargs):
         nonlocal called
         called = True
         return {"fqdn": kwargs["fqdn"], "released": True}
 
-    monkeypatch.setattr(exposure_api.exposure, "release", _release)
+    monkeypatch.setattr(exposure_api.exposure, "release", fake_release)
 
     with pytest.raises(ValueError, match="site name is already used"):
         exposure_api.release(fqdn="arthexis.com")
