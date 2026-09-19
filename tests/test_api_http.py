@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
-import os
 import socket
-import tempfile
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -48,6 +46,11 @@ class _Dispatcher:
         return self.result
 
 
+@pytest.fixture(autouse=True)
+def _isolated_token_store(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("GWAY_WEB_TOKEN_STORE", str(tmp_path / "tokens.json"))
+
+
 def _policy() -> APIConfig:
     return APIConfig(
         base_domain="gway.example.com",
@@ -67,30 +70,23 @@ def _running_server(
     *,
     max_response_bytes: int = 1024 * 1024,
 ):
-    previous_store = os.environ.get("GWAY_WEB_TOKEN_STORE")
-    with tempfile.TemporaryDirectory() as directory:
-        os.environ["GWAY_WEB_TOKEN_STORE"] = os.path.join(directory, "tokens.json")
-        token = str(issue_token(scopes="repo:read")["token"])
-        server = create_api_server(
-            dispatcher,
-            _policy(),
-            host="127.0.0.1",
-            port=0,
-            max_response_bytes=max_response_bytes,
-        )
-        server.test_token = token
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            yield server
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=2)
-            if previous_store is None:
-                os.environ.pop("GWAY_WEB_TOKEN_STORE", None)
-            else:
-                os.environ["GWAY_WEB_TOKEN_STORE"] = previous_store
+    token = str(issue_token(scopes="repo:read")["token"])
+    server = create_api_server(
+        dispatcher,
+        _policy(),
+        host="127.0.0.1",
+        port=0,
+        max_response_bytes=max_response_bytes,
+    )
+    server.test_token = token
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def _request(
@@ -164,15 +160,17 @@ def test_unknown_and_unexposed_routes_share_generic_404() -> None:
     dispatcher = _Dispatcher()
 
     with _running_server(dispatcher) as server:
-        unknown = _request(
-            server,
-            "GET",
-            "/impact",
-            host="missing.gway.example.com",
+        responses = (
+            _request(
+                server,
+                "GET",
+                "/impact",
+                host="missing.gway.example.com",
+            ),
+            _request(server, "GET", "/secret"),
         )
-        unexposed = _request(server, "GET", "/secret")
 
-    for status, _, body in (unknown, unexposed):
+    for status, _, body in responses:
         assert status == 404
         assert body == {
             "ok": False,
@@ -229,9 +227,16 @@ def test_transport_safe_argument_errors_map_to_invalid_arguments() -> None:
     }
 
 
-def test_callable_value_errors_do_not_leak_internal_details() -> None:
+@pytest.mark.parametrize(
+    ("error", "secret"),
+    [
+        (ValueError("private application detail"), "private application detail"),
+        (RuntimeError("secret stack detail"), "secret stack detail"),
+    ],
+)
+def test_internal_errors_do_not_leak_details(error: Exception, secret: str) -> None:
     dispatcher = _Dispatcher()
-    dispatcher.error = ValueError("private application detail")
+    dispatcher.error = error
 
     with _running_server(dispatcher) as server:
         status, _, body = _request(server, "GET", "/impact")
@@ -241,40 +246,25 @@ def test_callable_value_errors_do_not_leak_internal_details() -> None:
         "ok": False,
         "error": {"type": "internal_error", "message": "request execution failed"},
     }
-    assert "private application detail" not in json.dumps(body)
+    assert secret not in json.dumps(body)
 
 
-def test_unexpected_errors_do_not_leak_internal_details() -> None:
+@pytest.mark.parametrize("method", ["POST", "TRACE", "CONNECT"])
+def test_unsupported_methods_return_json_405_and_allow_get(method: str) -> None:
     dispatcher = _Dispatcher()
-    dispatcher.error = RuntimeError("secret stack detail")
 
     with _running_server(dispatcher) as server:
-        status, _, body = _request(server, "GET", "/impact")
+        status, headers, body = _request(server, method, "/impact")
 
-    assert status == 500
+    assert status == 405
+    assert headers["Allow"] == "GET"
     assert body == {
         "ok": False,
-        "error": {"type": "internal_error", "message": "request execution failed"},
+        "error": {
+            "type": "method_not_allowed",
+            "message": "only GET is supported",
+        },
     }
-    assert "secret stack detail" not in json.dumps(body)
-
-
-def test_unsupported_methods_return_json_405_and_allow_get() -> None:
-    dispatcher = _Dispatcher()
-
-    with _running_server(dispatcher) as server:
-        for method in ("POST", "TRACE", "CONNECT"):
-            status, headers, body = _request(server, method, "/impact")
-            assert status == 405
-            assert headers["Allow"] == "GET"
-            assert body == {
-                "ok": False,
-                "error": {
-                    "type": "method_not_allowed",
-                    "message": "only GET is supported",
-                },
-            }
-
     assert dispatcher.calls == []
 
 
