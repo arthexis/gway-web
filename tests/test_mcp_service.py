@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from starlette.testclient import TestClient
 
 from gway_web.api_config import APIConfig, APIProjectExposure
@@ -16,13 +17,19 @@ def _context(authorization: str | None):
     return SimpleNamespace(request=SimpleNamespace(headers=headers))
 
 
-def test_bearer_token_parser_rejects_malformed_credentials() -> None:
-    assert _bearer_token(None) is None
-    assert _bearer_token({}) is None
-    assert _bearer_token({"Authorization": "Basic abc"}) is None
-    assert _bearer_token({"Authorization": "Bearer"}) is None
-    assert _bearer_token({"Authorization": "Bearer a b"}) is None
-    assert _bearer_token({"Authorization": "Bearer abc"}) == "abc"
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        (None, None),
+        ({}, None),
+        ({"Authorization": "Basic abc"}, None),
+        ({"Authorization": "Bearer"}, None),
+        ({"Authorization": "Bearer a b"}, None),
+        ({"Authorization": "Bearer abc"}, "abc"),
+    ],
+)
+def test_bearer_token_parser(headers, expected) -> None:
+    assert _bearer_token(headers) == expected
 
 
 def test_mcp_bearer_authorizer_uses_target_project_scope(tmp_path, monkeypatch) -> None:
@@ -44,14 +51,16 @@ def test_mcp_bearer_authorizer_uses_target_project_scope(tmp_path, monkeypatch) 
     assert authorize(_context(None), MCPToolTarget("web_list_runs", "web", ("list-runs",))) is False
 
 
-def test_service_app_exposes_health_for_existing_web_exposure() -> None:
-    app = build_service_app(
+def _service_app():
+    return build_service_app(
         SimpleNamespace(),
         api_policy=APIConfig(),
         mcp_policy=MCPConfig(public_hosts=("mcp.example.com",)),
     )
 
-    with TestClient(app, base_url="http://mcp.example.com") as client:
+
+def test_service_app_exposes_health_for_existing_web_exposure() -> None:
+    with TestClient(_service_app(), base_url="http://mcp.example.com") as client:
         response = client.get("/health")
 
     assert response.status_code == 200
@@ -59,13 +68,7 @@ def test_service_app_exposes_health_for_existing_web_exposure() -> None:
 
 
 def test_service_app_rejects_unconfigured_public_host_before_mcp_dispatch() -> None:
-    app = build_service_app(
-        SimpleNamespace(),
-        api_policy=APIConfig(),
-        mcp_policy=MCPConfig(public_hosts=("mcp.example.com",)),
-    )
-
-    with TestClient(app, base_url="http://wrong.example.com") as client:
+    with TestClient(_service_app(), base_url="http://wrong.example.com") as client:
         response = client.post("/mcp", json={})
 
     assert response.status_code == 421
