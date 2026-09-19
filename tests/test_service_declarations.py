@@ -25,5 +25,6 @@ def test_web_services_exclude_removed_log_service(tmp_path: Path) -> None:
     assert callable(commands.log_publisher)
 
 
-def test_removed_log_service_entrypoint_stays_absent() -> None:
+def test_removed_log_service_modules_stay_absent() -> None:
     assert importlib.util.find_spec("gway_web.log_service") is None
+    assert importlib.util.find_spec("gway_web.logs") is None
