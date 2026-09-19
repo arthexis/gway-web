@@ -10,7 +10,7 @@ from gway_web import commands
 
 
 def _service_keys(tmp_path: Path) -> set[str]:
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     project = Project.from_path(root)
     manager = ServiceManager(
         project,
