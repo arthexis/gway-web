@@ -11,7 +11,8 @@ from gway_web.log_publisher_state import publisher_store_path
 from gway_web.tokens import revoke_token
 
 
-def _stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture(autouse=True)
+def _isolated_stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(
         "GWAY_WEB_LOG_PUBLISHER_STORE",
         str(tmp_path / "log-publishers.json"),
@@ -22,22 +23,23 @@ def _stores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_web_log_publisher_owns_route_headers_and_ingest_credential(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stores(tmp_path, monkeypatch)
+def _credential(token: str = "secret", token_id: str = "token-1") -> dict[str, str]:
+    return {"token": token, "token_id": token_id}
+
+
+def _provider(**kwargs) -> WebLogPublisherProvider:
+    kwargs.setdefault("credential_issuer", lambda **_kwargs: _credential())
+    return WebLogPublisherProvider(**kwargs)
+
+
+def test_web_log_publisher_owns_route_headers_and_ingest_credential() -> None:
     calls: list[dict[str, object]] = []
 
     def issue(**kwargs):
         calls.append(kwargs)
-        return {
-            "token": "gweb_v1_fixture_secret",
-            "token_id": "fixture-token",
-        }
+        return _credential("gweb_v1_fixture_secret", "fixture-token")
 
-    provider = WebLogPublisherProvider(credential_issuer=issue)
-    binding = provider.provision(
+    binding = WebLogPublisherProvider(credential_issuer=issue).provision(
         destination="https://logs.example.test/",
         consumer="wire",
     )
@@ -58,19 +60,8 @@ def test_web_log_publisher_owns_route_headers_and_ingest_credential(
     assert binding.metadata == {"token_id": "fixture-token"}
 
 
-def test_web_log_publisher_record_matches_gway_binding_wire_shape(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stores(tmp_path, monkeypatch)
-    provider = WebLogPublisherProvider(
-        credential_issuer=lambda **_kwargs: {
-            "token": "secret",
-            "token_id": "token-1",
-        }
-    )
-
-    record = provider.provision(
+def test_web_log_publisher_record_matches_gway_binding_wire_shape() -> None:
+    record = _provider().provision(
         destination="http://127.0.0.1:8040",
         consumer="wire",
     ).to_record()
@@ -95,28 +86,12 @@ def test_web_log_publisher_record_matches_gway_binding_wire_shape(
         "http://logs.example.test",
     ],
 )
-def test_web_log_publisher_rejects_invalid_destination(
-    destination: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stores(tmp_path, monkeypatch)
-    provider = WebLogPublisherProvider(
-        credential_issuer=lambda **_kwargs: {
-            "token": "secret",
-            "token_id": "token-1",
-        }
-    )
-
+def test_web_log_publisher_rejects_invalid_destination(destination: str) -> None:
     with pytest.raises(ValueError, match=r"HTTP\(S\) URL|loopback"):
-        provider.provision(destination=destination, consumer="wire")
+        _provider().provision(destination=destination, consumer="wire")
 
 
-def test_web_log_publisher_rejects_incomplete_credential(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stores(tmp_path, monkeypatch)
+def test_web_log_publisher_rejects_incomplete_credential() -> None:
     provider = WebLogPublisherProvider(
         credential_issuer=lambda **_kwargs: {"token_id": "token-1"}
     )
@@ -128,21 +103,14 @@ def test_web_log_publisher_rejects_incomplete_credential(
         )
 
 
-def test_web_log_publisher_reuses_valid_provider_binding(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stores(tmp_path, monkeypatch)
+def test_web_log_publisher_reuses_valid_provider_binding() -> None:
     issued: list[dict[str, object]] = []
 
     def issue(**kwargs):
         issued.append(kwargs)
-        return {
-            "token": "valid-secret",
-            "token_id": "token-1",
-        }
+        return _credential("valid-secret")
 
-    provider = WebLogPublisherProvider(
+    provider = _provider(
         credential_issuer=issue,
         credential_verifier=lambda token, *, scope=None: (
             token == "valid-secret" and scope == "logs:ingest"
@@ -162,23 +130,16 @@ def test_web_log_publisher_reuses_valid_provider_binding(
     assert issued == [{"name": "gway-consumer:wire", "scopes": "logs:ingest"}]
 
 
-def test_web_log_publisher_rotates_invalid_provider_binding(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stores(tmp_path, monkeypatch)
+def test_web_log_publisher_rotates_invalid_provider_binding() -> None:
     counter = 0
 
     def issue(**_kwargs):
         nonlocal counter
         counter += 1
-        return {
-            "token": f"secret-{counter}",
-            "token_id": f"token-{counter}",
-        }
+        return _credential(f"secret-{counter}", f"token-{counter}")
 
     valid_tokens = {"secret-1"}
-    provider = WebLogPublisherProvider(
+    provider = _provider(
         credential_issuer=issue,
         credential_verifier=lambda token, *, scope=None: (
             token in valid_tokens and scope == "logs:ingest"
@@ -200,11 +161,7 @@ def test_web_log_publisher_rotates_invalid_provider_binding(
     assert second.environment["GWAY_WEB_LOG_TOKEN"] == "secret-2"
 
 
-def test_web_log_publisher_rotates_revoked_real_token(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stores(tmp_path, monkeypatch)
+def test_web_log_publisher_rotates_revoked_real_token() -> None:
     provider = WebLogPublisherProvider()
 
     first = provider.provision(
@@ -223,20 +180,10 @@ def test_web_log_publisher_rotates_revoked_real_token(
     assert second.environment["GWAY_WEB_LOG_TOKEN"] != first.environment["GWAY_WEB_LOG_TOKEN"]
 
 
-def test_web_log_publisher_private_store_permissions(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stores(tmp_path, monkeypatch)
-    provider = WebLogPublisherProvider(
-        credential_issuer=lambda **_kwargs: {
-            "token": "secret",
-            "token_id": "token-1",
-        },
+def test_web_log_publisher_private_store_permissions(tmp_path: Path) -> None:
+    _provider(
         credential_verifier=lambda _token, *, scope=None: scope == "logs:ingest",
-    )
-
-    provider.provision(
+    ).provision(
         destination="https://logs.example.test",
         consumer="wire",
     )
@@ -247,52 +194,42 @@ def test_web_log_publisher_private_store_permissions(
     assert oct(path.parent.stat().st_mode & 0o777) == "0o700"
 
 
-def test_web_log_publisher_state_is_scoped_by_consumer_and_destination(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stores(tmp_path, monkeypatch)
+def test_web_log_publisher_state_is_scoped_by_consumer_and_destination() -> None:
     counter = 0
 
     def issue(**_kwargs):
         nonlocal counter
         counter += 1
-        return {
-            "token": f"secret-{counter}",
-            "token_id": f"token-{counter}",
-        }
+        return _credential(f"secret-{counter}", f"token-{counter}")
 
-    provider = WebLogPublisherProvider(
+    provider = _provider(
         credential_issuer=issue,
         credential_verifier=lambda _token, *, scope=None: scope == "logs:ingest",
     )
 
-    wire = provider.provision(
-        destination="https://logs.example.test",
-        consumer="wire",
-    )
-    arthexis = provider.provision(
-        destination="https://logs.example.test",
-        consumer="arthexis",
-    )
-    local = provider.provision(
-        destination="http://127.0.0.1:8040",
-        consumer="wire",
-    )
+    bindings = [
+        provider.provision(
+            destination="https://logs.example.test",
+            consumer="wire",
+        ),
+        provider.provision(
+            destination="https://logs.example.test",
+            consumer="arthexis",
+        ),
+        provider.provision(
+            destination="http://127.0.0.1:8040",
+            consumer="wire",
+        ),
+    ]
 
-    assert {
-        wire.metadata["token_id"],
-        arthexis.metadata["token_id"],
-        local.metadata["token_id"],
-    } == {"token-1", "token-2", "token-3"}
+    assert {binding.metadata["token_id"] for binding in bindings} == {
+        "token-1",
+        "token-2",
+        "token-3",
+    }
 
 
-def test_log_publisher_command_reuses_provider_owned_binding(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stores(tmp_path, monkeypatch)
-
+def test_log_publisher_command_reuses_provider_owned_binding() -> None:
     first = commands.log_publisher(
         destination="https://logs.example.test",
         consumer="wire",
@@ -320,20 +257,11 @@ def test_log_publisher_command_reuses_provider_owned_binding(
     assert token.startswith("gweb_v1_")
 
 
-def test_web_publisher_uses_web_owned_protocol_configuration(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stores(tmp_path, monkeypatch)
-    provider = WebLogPublisherProvider(
-        credential_issuer=lambda **_kwargs: {
-            "token": "fixture-value",
-            "token_id": "fixture-id",
-        },
+def test_web_publisher_uses_web_owned_protocol_configuration() -> None:
+    binding = _provider(
+        credential_issuer=lambda **_kwargs: _credential("fixture-value", "fixture-id"),
         credential_verifier=lambda _token, *, scope=None: scope == LOG_INGEST_SCOPE,
-    )
-
-    binding = provider.provision(
+    ).provision(
         destination="https://logs.example.test",
         consumer="wire",
     )
