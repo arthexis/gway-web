@@ -9,11 +9,6 @@ module = "gway_web.commands"
 [variables.logs]
 source = "~/.local/state/gway/runs"
 
-[services.log-api]
-description = "GWAY Web authenticated log HTTP API"
-command = ["{python}", "-m", "gway_web.log_service", "--source", "[logs.source]"]
-restart = "on-failure"
-
 [services.api]
 description = "GWAY Web authenticated single-call API"
 command = ["{python}", "-m", "gway_web.api_service"]
